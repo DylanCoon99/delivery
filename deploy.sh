@@ -3,7 +3,7 @@
 # Configuration
 AWS_REGION="us-east-2"
 AWS_ACCOUNT_ID="120569606269"
-ECR_REPO_NAME="lambda_services"
+ECR_REPO_NAME="lead-ship-lambda"
 IMAGE_TAG="latest"
 
 # Full ECR repository URI

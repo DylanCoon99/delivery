@@ -18,9 +18,9 @@ import (
     "github.com/aws/aws-sdk-go-v2/service/ses/types"
     "github.com/aws/aws-sdk-go-v2/service/ses"
     _ "github.com/jackc/pgx/v5/stdlib"
-    //"github.com/DylanCoon99/lead_delivery_app/backend/cmd/types"
-    "github.com/DylanCoon99/lead_delivery_app/backend/internal/utils"
-    "github.com/DylanCoon99/lead_delivery_app/backend/internal/database/queries"
+    //"github.com/DylanCoon99/delivery/cmd/types"
+    "github.com/DylanCoon99/delivery/internal/utils"
+    "github.com/DylanCoon99/delivery/internal/database/queries"
 
 )
 
