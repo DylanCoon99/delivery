@@ -1,23 +1,19 @@
-# Build stage
 FROM golang:1.24 AS builder
 
 WORKDIR /build
 
-# Copy go mod files
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
 COPY . .
 
-# Build for Lambda
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags lambda.norpc -o bootstrap main.go
+# Build
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bootstrap .
 
-# Runtime stage
-FROM public.ecr.aws/lambda/provided:al2
+# Runtime
+FROM public.ecr.aws/lambda/provided:al2-arm64
 
-# Copy the binary from builder
-COPY --from=builder /build/bootstrap ${LAMBDA_TASK_ROOT}/bootstrap
+# Copy directly to /var/runtime
+COPY --from=builder /build/bootstrap /var/runtime/bootstrap
 
-# Set the CMD to your handler
 CMD ["bootstrap"]

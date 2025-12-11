@@ -144,6 +144,51 @@ func (q *Queries) GetDeliveryJob(ctx context.Context, arg GetDeliveryJobParams) 
 	return i, err
 }
 
+const getDueJobs = `-- name: GetDueJobs :many
+SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, created_at, updated_at
+FROM delivery_jobs
+WHERE status = 'pending'
+  AND scheduled_at <= NOW()
+ORDER BY scheduled_at ASC
+LIMIT 100
+`
+
+func (q *Queries) GetDueJobs(ctx context.Context) ([]DeliveryJob, error) {
+	rows, err := q.db.QueryContext(ctx, getDueJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DeliveryJob
+	for rows.Next() {
+		var i DeliveryJob
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.BuyerID,
+			&i.DeliveryMethodID,
+			&i.Payload,
+			&i.Description,
+			&i.ScheduledAt,
+			&i.DeliveredAt,
+			&i.Status,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingJobs = `-- name: ListPendingJobs :many
 SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, created_at, updated_at
 FROM delivery_jobs

@@ -7,7 +7,7 @@ import (
     "log"
     "os"
     "net/url"
-    //"time"
+    "time"
     //"bytes"
     //"net/http"
     //"encoding/json"
@@ -25,11 +25,10 @@ import (
 )
 
 var (
-    dbQueries  *queries.Queries
+    db        *sql.DB          // Add this global variable
+    dbQueries *queries.Queries
     sesClient *ses.Client
 )
-
-
 
 type WebhookDeliveryConfig struct {
     URL        string `json:"url"`
@@ -37,24 +36,38 @@ type WebhookDeliveryConfig struct {
     AuthHeader string `json:"auth_header,omitempty"`
 }
 
-
-
 func init() {
-    var err error
-
+    log.Println("Initializing Lambda function...")
+    
+    // Get database credentials from Secrets Manager
     secret, err := utils.GetDBSecret()
     if err != nil {
-        log.Fatal("Failed to get database secret:", err)
+        log.Fatalf("Failed to get database secret: %v", err)
     }
-
+    log.Println("Retrieved database credentials")
+    
+    // Get database connection details from environment
     host := os.Getenv("HOST")
     port := os.Getenv("PORT")
     dbName := os.Getenv("DB_NAME")
-
+    
+    // Validate environment variables
+    if host == "" {
+        log.Fatal("HOST environment variable not set")
+    }
+    if port == "" {
+        port = "5432" // default PostgreSQL port
+    }
+    if dbName == "" {
+        log.Fatal("DB_NAME environment variable not set")
+    }
+    
+    log.Printf("Connecting to: %s:%s/%s", host, port, dbName)
+    
+    // URL encode password to handle special characters
     encodedPassword := url.QueryEscape(secret.Password)
-
-
-    // Build your connection string
+    
+    // Build connection string
     dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=require",
         secret.Username,
         encodedPassword,
@@ -62,24 +75,41 @@ func init() {
         port,
         dbName,
     )
-
-
-    db, err := sql.Open("postgres", dsn)
-
+    
+    // Open database connection (use pgx driver, store in GLOBAL db variable)
+    db, err = sql.Open("pgx", dsn)  //  No := here, assigns to global db
     if err != nil {
-        fmt.Errorf("Failed to start db")
-        return
+        log.Fatalf("Failed to open database: %v", err)
     }
-
+    
+    // Test the connection
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    
+    if err := db.PingContext(ctx); err != nil {
+        log.Fatalf("Failed to ping database: %v", err)
+    }
+    log.Println("Database connection established")
+    
+    // Configure connection pool
+    db.SetMaxOpenConns(25)
+    db.SetMaxIdleConns(5)
+    db.SetConnMaxLifetime(5 * time.Minute)
+    
+    // Create queries object
     dbQueries = queries.New(db)
-
-
+    log.Println("Database queries initialized")
+    
+    // Initialize AWS SES client
     cfg, err := config.LoadDefaultConfig(context.Background())
     if err != nil {
-        log.Fatalf("failed to load AWS config: %v", err)
+        log.Fatalf("Failed to load AWS config: %v", err)
     }
-
+    
     sesClient = ses.NewFromConfig(cfg)
+    log.Println("SES client initialized")
+    
+    log.Println("Lambda initialization complete")
 }
 
 // Main Lambda entrypoint
@@ -98,7 +128,7 @@ func handler(ctx context.Context) error {
     }
 
     for _, t := range tenants {
-        if err := processTenantJobs(ctx, dbQueries, t.ID); err != nil {
+        if err := processJobs(ctx, dbQueries); err != nil {
             log.Printf("Error processing tenant %s: %v", t.ID, err)
         }
     }
@@ -107,11 +137,10 @@ func handler(ctx context.Context) error {
 }
 
 
-func processTenantJobs(ctx context.Context, q *queries.Queries, tenantID uuid.UUID) error {
-    pending, err := q.ListPendingJobs(ctx, queries.ListPendingJobsParams{
-        Limit:    50,
-        TenantID: tenantID,
-    })
+func processJobs(ctx context.Context, q *queries.Queries) error {
+    
+    pending, err := q.GetDueJobs(ctx)
+
     if err != nil {
         return err
     }
@@ -130,6 +159,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         ID:       job.DeliveryMethodID,
         TenantID: job.TenantID,
     })
+    
     if err != nil {
         return fmt.Errorf("failed to fetch delivery method: %w", err)
     }
@@ -139,10 +169,10 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         ID:       job.BuyerID,
         TenantID: job.TenantID,
     })
+
     if err != nil {
         return fmt.Errorf("failed to fetch buyer: %w", err)
     }
-
 
     // Execute delivery
     var deliveryErr error
@@ -211,7 +241,7 @@ func deliverEmail(ctx context.Context, job *queries.DeliveryJob, method *queries
             Subject: &types.Content{Data: aws.String("New Lead")},
             Body: &types.Body{
                 Text: &types.Content{
-                    Data: aws.String("Here is your new lead. (TODO)"),
+                    Data: aws.String("Here are your leads. (TODO)"),
                 },
             },
         },
