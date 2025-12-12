@@ -22,7 +22,14 @@ phases:
       - docker push $REPOSITORY_URI:$IMAGE_TAG
       - echo Writing image definitions file...
       - printf '[{"name":"lead-ship-backend","imageUri":"%s"}]' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
-
+      - echo Updating Lambda function with new container image...
+      - IMAGE_URI=$REPOSITORY_URI:$IMAGE_TAG
+      - echo Deploying image $IMAGE_URI to Lambda function $LAMBDA_FUNCTION_NAME
+      - aws lambda update-function-code --function-name $LAMBDA_FUNCTION_NAME --image-uri $IMAGE_URI --region $AWS_DEFAULT_REGION
+      - echo Waiting for function update to complete...
+      - aws lambda wait function-updated --function-name $LAMBDA_FUNCTION_NAME --region $AWS_DEFAULT_REGION
+      - echo Lambda function updated successfully!
 artifacts:
   files:
     - imagedefinitions.json
+    - deployspec.yml

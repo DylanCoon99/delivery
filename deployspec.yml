@@ -1,0 +1,12 @@
+version: 0.2
+
+phases:
+  build:
+    commands:
+      - echo Updating Lambda function with new container image...
+      - IMAGE_URI=$(cat imageUri.txt)
+      - echo Deploying image $IMAGE_URI to Lambda function $LAMBDA_FUNCTION_NAME
+      - aws lambda update-function-code --function-name $LAMBDA_FUNCTION_NAME --image-uri $IMAGE_URI --region $AWS_DEFAULT_REGION
+      - echo Waiting for function update to complete...
+      - aws lambda wait function-updated --function-name $LAMBDA_FUNCTION_NAME --region $AWS_DEFAULT_REGION
+      - echo Lambda function updated successfully!
