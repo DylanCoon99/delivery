@@ -1,1 +1,17 @@
-notes.txt
+Delivery testing process
+
+- figure out how to schedule the lambda function to run every minute
+- first figure out if lambda function is able to send emails
+
+
+- workflow
+	- login as admin
+		- create a buyer with my email
+		- set delivery method as email
+	- login as supplier
+		- create a lead batch
+		- upload the lead batch
+	- login as admin
+		- create a delivery
+		- schedule the delivery for a time in the future
+	- observe the lambda function behavior

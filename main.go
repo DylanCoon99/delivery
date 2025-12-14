@@ -36,6 +36,27 @@ type WebhookDeliveryConfig struct {
     AuthHeader string `json:"auth_header,omitempty"`
 }
 
+/*
+func init() {
+
+    // Initialize AWS SES client
+    cfg, err := config.LoadDefaultConfig(context.Background())
+    if err != nil {
+        log.Fatalf("Failed to load AWS config: %v", err)
+    }
+    
+    sesClient = ses.NewFromConfig(cfg)
+    log.Println("SES client initialized")
+
+    for i := 0; i < 5; i++ {
+        log.Println("TESTING")
+    }
+
+}
+*/
+
+
+
 func init() {
     log.Println("Initializing Lambda function...")
     
@@ -112,6 +133,7 @@ func init() {
     log.Println("Lambda initialization complete")
 }
 
+
 // Main Lambda entrypoint
 func handler(ctx context.Context) error {
 
@@ -125,12 +147,12 @@ func handler(ctx context.Context) error {
     })
     if err != nil {
         return fmt.Errorf("failed to fetch tenants: %w", err)
+    } else {
+        log.Printf("Got tenants: %v", tenants)
     }
 
-    for _, t := range tenants {
-        if err := processJobs(ctx, dbQueries); err != nil {
-            log.Printf("Error processing tenant %s: %v", t.ID, err)
-        }
+    if err := processJobs(ctx, dbQueries); err != nil {
+        log.Printf("Error processing jobs %v",  err)
     }
 
     return nil
@@ -143,6 +165,8 @@ func processJobs(ctx context.Context, q *queries.Queries) error {
 
     if err != nil {
         return err
+    } else {
+        log.Printf("Got Pending Jobs: %v", pending)
     }
 
     for _, job := range pending {
@@ -181,6 +205,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     case "email":
         to := buyer.ContactEmail.String
         deliveryErr = deliverEmail(ctx, job, &method, to)
+        log.Println("Finished Sending Email")
     /*
     case "webhook":
         var cfg WebhookDeliveryConfig
@@ -196,9 +221,12 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         return fmt.Errorf("unknown delivery method type: %s", method.MethodType.String)
     }
 
+
     // Update job status
     status := sql.NullString{String: "completed", Valid: true}
     lastErr := sql.NullString{Valid: false}
+
+    log.Printf("DeliveryErr: %v", deliveryErr)
 
     if deliveryErr != nil {
         status.String = "failed"
@@ -208,7 +236,6 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     if _, err := q.UpdateDeliveryJobStatus(ctx, queries.UpdateDeliveryJobStatusParams{
         ID:        job.ID,
         Status:    status.String,
-        LastError: lastErr,
         TenantID:  job.TenantID,
     }); err != nil {
         return fmt.Errorf("failed to update job status: %w", err)

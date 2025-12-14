@@ -23,8 +23,6 @@ INSERT INTO delivery_jobs (
     delivery_method_id,
     scheduled_at,
     delivered_at,
-    status,
-    attempts,
     last_error,
     payload,
     description
@@ -36,11 +34,9 @@ VALUES (
     $4,                -- delivery_method_id
     $5,                -- scheduled_at
     $6,                -- delivered_at
-    COALESCE($7, 'pending'),
-    COALESCE($8, 0),
-    $9,                -- last_error
-    $10,               -- payload (jsonb)
-    $11                -- description
+    $7,                -- last_error
+    $8,                -- payload (jsonb)
+    $9                 -- description
 )
 RETURNING id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, created_at, updated_at
 `
@@ -52,8 +48,6 @@ type CreateDeliveryJobParams struct {
 	DeliveryMethodID uuid.UUID
 	ScheduledAt      time.Time
 	DeliveredAt      sql.NullTime
-	Column7          interface{}
-	Column8          interface{}
 	LastError        sql.NullString
 	Payload          json.RawMessage
 	Description      sql.NullString
@@ -71,8 +65,6 @@ func (q *Queries) CreateDeliveryJob(ctx context.Context, arg CreateDeliveryJobPa
 		arg.DeliveryMethodID,
 		arg.ScheduledAt,
 		arg.DeliveredAt,
-		arg.Column7,
-		arg.Column8,
 		arg.LastError,
 		arg.Payload,
 		arg.Description,
@@ -242,29 +234,21 @@ func (q *Queries) ListPendingJobs(ctx context.Context, arg ListPendingJobsParams
 const updateDeliveryJobStatus = `-- name: UpdateDeliveryJobStatus :one
 UPDATE delivery_jobs
 SET status = $2,
-    attempts = attempts + 1,
-    last_error = $3,
     delivered_at = CASE WHEN $2 = 'completed' THEN now() ELSE delivered_at END,
     updated_at = now()
 WHERE id = $1
-  AND tenant_id = $4
+  AND tenant_id = $3
 RETURNING id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, created_at, updated_at
 `
 
 type UpdateDeliveryJobStatusParams struct {
-	ID        uuid.UUID
-	Status    string
-	LastError sql.NullString
-	TenantID  uuid.UUID
+	ID       uuid.UUID
+	Status   string
+	TenantID uuid.UUID
 }
 
 func (q *Queries) UpdateDeliveryJobStatus(ctx context.Context, arg UpdateDeliveryJobStatusParams) (DeliveryJob, error) {
-	row := q.db.QueryRowContext(ctx, updateDeliveryJobStatus,
-		arg.ID,
-		arg.Status,
-		arg.LastError,
-		arg.TenantID,
-	)
+	row := q.db.QueryRowContext(ctx, updateDeliveryJobStatus, arg.ID, arg.Status, arg.TenantID)
 	var i DeliveryJob
 	err := row.Scan(
 		&i.ID,
