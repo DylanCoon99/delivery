@@ -15,3 +15,4 @@ Delivery testing process
 		- create a delivery
 		- schedule the delivery for a time in the future
 	- observe the lambda function behavior
+	
