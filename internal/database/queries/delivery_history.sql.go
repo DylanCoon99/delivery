@@ -15,14 +15,13 @@ import (
 
 const createDeliveryHistory = `-- name: CreateDeliveryHistory :one
 INSERT INTO delivery_history (
-    id, tenant_id, job_id, buyer_id, delivery_method_id, status, error_message, payload_summary
+    tenant_id, job_id, buyer_id, delivery_method_id, status, error_message, payload_summary
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING id, tenant_id, job_id, buyer_id, delivery_method_id, status, error_message, payload_summary, created_at
 `
 
 type CreateDeliveryHistoryParams struct {
-	ID               uuid.UUID
 	TenantID         uuid.UUID
 	JobID            uuid.NullUUID
 	BuyerID          uuid.NullUUID
@@ -34,7 +33,6 @@ type CreateDeliveryHistoryParams struct {
 
 func (q *Queries) CreateDeliveryHistory(ctx context.Context, arg CreateDeliveryHistoryParams) (DeliveryHistory, error) {
 	row := q.db.QueryRowContext(ctx, createDeliveryHistory,
-		arg.ID,
 		arg.TenantID,
 		arg.JobID,
 		arg.BuyerID,

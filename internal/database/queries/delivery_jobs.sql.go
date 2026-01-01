@@ -17,7 +17,6 @@ import (
 const createDeliveryJob = `-- name: CreateDeliveryJob :one
 
 INSERT INTO delivery_jobs (
-    id,
     tenant_id,
     buyer_id,
     delivery_method_id,
@@ -28,21 +27,19 @@ INSERT INTO delivery_jobs (
     description
 )
 VALUES (
-    $1,                -- id
-    $2,                -- tenant_id
-    $3,                -- buyer_id
-    $4,                -- delivery_method_id
-    $5,                -- scheduled_at
-    $6,                -- delivered_at
-    $7,                -- last_error
-    $8,                -- payload (jsonb)
-    $9                 -- description
+    $1,                -- tenant_id
+    $2,                -- buyer_id
+    $3,                -- delivery_method_id
+    $4,                -- scheduled_at
+    $5,                -- delivered_at
+    $6,                -- last_error
+    $7,                -- payload (jsonb)
+    $8                 -- description
 )
-RETURNING id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, created_at, updated_at
+RETURNING id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
 `
 
 type CreateDeliveryJobParams struct {
-	ID               uuid.UUID
 	TenantID         uuid.UUID
 	BuyerID          uuid.UUID
 	DeliveryMethodID uuid.UUID
@@ -59,7 +56,6 @@ type CreateDeliveryJobParams struct {
 // ========================================
 func (q *Queries) CreateDeliveryJob(ctx context.Context, arg CreateDeliveryJobParams) (DeliveryJob, error) {
 	row := q.db.QueryRowContext(ctx, createDeliveryJob,
-		arg.ID,
 		arg.TenantID,
 		arg.BuyerID,
 		arg.DeliveryMethodID,
@@ -81,6 +77,7 @@ func (q *Queries) CreateDeliveryJob(ctx context.Context, arg CreateDeliveryJobPa
 		&i.DeliveredAt,
 		&i.Status,
 		&i.LastError,
+		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -104,7 +101,7 @@ func (q *Queries) DeleteDeliveryJob(ctx context.Context, arg DeleteDeliveryJobPa
 }
 
 const getDeliveryJob = `-- name: GetDeliveryJob :one
-SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, created_at, updated_at
+SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
 FROM delivery_jobs
 WHERE id = $1
   AND tenant_id = $2
@@ -130,6 +127,7 @@ func (q *Queries) GetDeliveryJob(ctx context.Context, arg GetDeliveryJobParams) 
 		&i.DeliveredAt,
 		&i.Status,
 		&i.LastError,
+		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -137,7 +135,7 @@ func (q *Queries) GetDeliveryJob(ctx context.Context, arg GetDeliveryJobParams) 
 }
 
 const getDueJobs = `-- name: GetDueJobs :many
-SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, created_at, updated_at
+SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
 FROM delivery_jobs
 WHERE status = 'pending'
   AND scheduled_at <= NOW()
@@ -165,6 +163,7 @@ func (q *Queries) GetDueJobs(ctx context.Context) ([]DeliveryJob, error) {
 			&i.DeliveredAt,
 			&i.Status,
 			&i.LastError,
+			&i.Attempts,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -181,8 +180,25 @@ func (q *Queries) GetDueJobs(ctx context.Context) ([]DeliveryJob, error) {
 	return items, nil
 }
 
+const incrementDeliveryJobAttempts = `-- name: IncrementDeliveryJobAttempts :exec
+UPDATE delivery_jobs 
+SET attempts = attempts + 1,
+    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+`
+
+type IncrementDeliveryJobAttemptsParams struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+}
+
+func (q *Queries) IncrementDeliveryJobAttempts(ctx context.Context, arg IncrementDeliveryJobAttemptsParams) error {
+	_, err := q.db.ExecContext(ctx, incrementDeliveryJobAttempts, arg.ID, arg.TenantID)
+	return err
+}
+
 const listPendingJobs = `-- name: ListPendingJobs :many
-SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, created_at, updated_at
+SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
 FROM delivery_jobs
 WHERE status = 'pending'
   AND tenant_id = $2
@@ -215,6 +231,7 @@ func (q *Queries) ListPendingJobs(ctx context.Context, arg ListPendingJobsParams
 			&i.DeliveredAt,
 			&i.Status,
 			&i.LastError,
+			&i.Attempts,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -234,21 +251,28 @@ func (q *Queries) ListPendingJobs(ctx context.Context, arg ListPendingJobsParams
 const updateDeliveryJobStatus = `-- name: UpdateDeliveryJobStatus :one
 UPDATE delivery_jobs
 SET status = $2,
-    delivered_at = CASE WHEN $2 = 'completed' THEN now() ELSE delivered_at END,
+    last_error = $4,
+    delivered_at = CASE WHEN $2 = 'success' THEN now() ELSE delivered_at END,
     updated_at = now()
 WHERE id = $1
   AND tenant_id = $3
-RETURNING id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, created_at, updated_at
+RETURNING id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
 `
 
 type UpdateDeliveryJobStatusParams struct {
-	ID       uuid.UUID
-	Status   string
-	TenantID uuid.UUID
+	ID        uuid.UUID
+	Status    string
+	TenantID  uuid.UUID
+	LastError sql.NullString
 }
 
 func (q *Queries) UpdateDeliveryJobStatus(ctx context.Context, arg UpdateDeliveryJobStatusParams) (DeliveryJob, error) {
-	row := q.db.QueryRowContext(ctx, updateDeliveryJobStatus, arg.ID, arg.Status, arg.TenantID)
+	row := q.db.QueryRowContext(ctx, updateDeliveryJobStatus,
+		arg.ID,
+		arg.Status,
+		arg.TenantID,
+		arg.LastError,
+	)
 	var i DeliveryJob
 	err := row.Scan(
 		&i.ID,
@@ -261,6 +285,7 @@ func (q *Queries) UpdateDeliveryJobStatus(ctx context.Context, arg UpdateDeliver
 		&i.DeliveredAt,
 		&i.Status,
 		&i.LastError,
+		&i.Attempts,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

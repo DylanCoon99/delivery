@@ -3,20 +3,26 @@ package main
 import (
     "context"
     "database/sql"
+    "errors"
     "fmt"
     "log"
     "os"
+
     "net/url"
     "time"
-    //"bytes"
+    "bytes"
     //"net/http"
-    //"encoding/json"
-    "github.com/google/uuid"
+    "encoding/csv"
+    "encoding/json"
+    "encoding/base64"
+    //"github.com/google/uuid"
     "github.com/aws/aws-lambda-go/lambda"
     "github.com/aws/aws-sdk-go-v2/aws"
     "github.com/aws/aws-sdk-go-v2/config"
     "github.com/aws/aws-sdk-go-v2/service/ses/types"
     "github.com/aws/aws-sdk-go-v2/service/ses"
+    "github.com/aws/aws-sdk-go-v2/service/sesv2"
+    sesv2types "github.com/aws/aws-sdk-go-v2/service/sesv2/types"
     _ "github.com/jackc/pgx/v5/stdlib"
     //"github.com/DylanCoon99/delivery/cmd/types"
     "github.com/DylanCoon99/delivery/internal/utils"
@@ -25,10 +31,14 @@ import (
 )
 
 var (
-    db        *sql.DB          // Add this global variable
-    dbQueries *queries.Queries
-    sesClient *ses.Client
+    db         *sql.DB          // Add this global variable
+    dbQueries  *queries.Queries
+    sesClient  *ses.Client
+    sesv2Client *sesv2.Client
 )
+
+// ErrEmailSuppressed indicates the email address is on a suppression list
+var ErrEmailSuppressed = errors.New("email address is suppressed")
 
 type WebhookDeliveryConfig struct {
     URL        string `json:"url"`
@@ -128,8 +138,9 @@ func init() {
     }
     
     sesClient = ses.NewFromConfig(cfg)
+    sesv2Client = sesv2.NewFromConfig(cfg)
     log.Println("SES client initialized")
-    
+
     log.Println("Lambda initialization complete")
 }
 
@@ -179,6 +190,86 @@ func processJobs(ctx context.Context, q *queries.Queries) error {
 }
 
 func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJob) error {
+    
+    const maxRetries = 3
+    
+    // Increment attempts
+    if err := q.IncrementDeliveryJobAttempts(ctx, queries.IncrementDeliveryJobAttemptsParams{
+        ID:       job.ID,
+        TenantID: job.TenantID,
+    }); err != nil {
+        log.Printf("Failed to increment attempts: %v", err)
+    }
+
+
+    // Parse payload
+    var payload map[string]interface{}
+    if err := json.Unmarshal(job.Payload, &payload); err != nil {
+        return fmt.Errorf("failed to parse payload: %w", err)
+    }
+
+    // Extract leads
+    leadsData, ok := payload["leads"].([]interface{})
+    if !ok {
+        return fmt.Errorf("invalid leads data in payload")
+    }
+
+    log.Printf("Leads: %v", leadsData)
+
+    // Generate CSV
+    csvBuffer := new(bytes.Buffer)
+    writer := csv.NewWriter(csvBuffer)
+    
+    // Write CSV header
+    writer.Write([]string{"Email", "First Name", "Phone Number", 
+        "Company Name", "Employee Size", "Publisher Name", 
+        "LinkedIn Company", "LinkedIn Contact", "Downloaded Asset Name",
+        "State", "Region", "Address", "Industry", "IP Address"}) // Add your columns
+    
+    // Write lead data
+    for _, leadInterface := range leadsData {
+
+        lead := leadInterface.(map[string]interface{})
+        // Helper function to safely extract string values
+        extractString := func(field interface{}) string {
+            if field == nil {
+                return ""
+            }
+            // Handle nested map structure (e.g., map[String:value Valid:true])
+            if fieldMap, ok := field.(map[string]interface{}); ok {
+                if strVal, exists := fieldMap["String"]; exists && strVal != nil {
+                    if str, ok := strVal.(string); ok {
+                        return str
+                    }
+                }
+            }
+            // Handle direct string
+            if str, ok := field.(string); ok {
+                return str
+            }
+            return ""
+        }
+        
+        writer.Write([]string{
+            extractString(lead["EmailHash"]),
+            extractString(lead["FullName"]),
+            extractString(lead["PhoneHash"]),
+            extractString(lead["CompanyName"]),
+            extractString(lead["EmployeeSize"]),
+            extractString(lead["PublisherName"]),
+            extractString(lead["LinkedinCompany"]),
+            extractString(lead["LinkedinContact"]),
+            extractString(lead["DownloadedAssetName"]),
+            extractString(lead["State"]),
+            extractString(lead["Region"]),
+            extractString(lead["Address"]),
+            extractString(lead["Industry"]),
+            extractString(lead["IpAddress"]),
+        })
+    }
+    writer.Flush()
+
+
     method, err := q.GetDeliveryMethod(ctx, queries.GetDeliveryMethodParams{
         ID:       job.DeliveryMethodID,
         TenantID: job.TenantID,
@@ -188,24 +279,13 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         return fmt.Errorf("failed to fetch delivery method: %w", err)
     }
 
-    // Fetch buyer to get contact email
-    buyer, err := q.GetBuyerByID(ctx, queries.GetBuyerByIDParams{
-        ID:       job.BuyerID,
-        TenantID: job.TenantID,
-    })
-
-    if err != nil {
-        return fmt.Errorf("failed to fetch buyer: %w", err)
-    }
 
     // Execute delivery
     var deliveryErr error
 
     switch method.MethodType.String {
     case "email":
-        to := buyer.ContactEmail.String
-        deliveryErr = deliverEmail(ctx, job, &method, to)
-        log.Println("Finished Sending Email")
+        deliveryErr = deliverEmail(ctx, job, &method, csvBuffer.Bytes(), fmt.Sprintf("leads_%s.csv", time.Now().Format("20060102_150405")))
     /*
     case "webhook":
         var cfg WebhookDeliveryConfig
@@ -223,31 +303,53 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
 
 
     // Update job status
-    status := sql.NullString{String: "completed", Valid: true}
+    // Determine final status
+    var status string
     lastErr := sql.NullString{Valid: false}
 
-    log.Printf("DeliveryErr: %v", deliveryErr)
-
     if deliveryErr != nil {
-        status.String = "failed"
+        // Check if this is a permanent failure (suppressed email - no retry)
+        if errors.Is(deliveryErr, ErrEmailSuppressed) {
+            status = "failed"
+            log.Printf("Job %s permanently failed - email suppressed: %v", job.ID, deliveryErr)
+        } else if job.Attempts+1 < maxRetries {
+            // Retryable error - keep as pending
+            status = "pending"
+            log.Printf("Job %s failed (attempt %d/%d), will retry: %v", job.ID, job.Attempts+1, maxRetries, deliveryErr)
+        } else {
+            status = "failed" // Max retries reached
+            log.Printf("Job %s failed after %d attempts: %v", job.ID, job.Attempts+1, deliveryErr)
+        }
         lastErr = sql.NullString{String: deliveryErr.Error(), Valid: true}
+    } else {
+        status = "completed"
+        log.Printf("Job %s completed successfully on attempt %d", job.ID, job.Attempts+1)
     }
 
+
+    // Update job status
     if _, err := q.UpdateDeliveryJobStatus(ctx, queries.UpdateDeliveryJobStatusParams{
         ID:        job.ID,
-        Status:    status.String,
+        Status:    status,
         TenantID:  job.TenantID,
+        LastError: lastErr,
     }); err != nil {
         return fmt.Errorf("failed to update job status: %w", err)
     }
 
+    // Add history entry
+    historyStatus := status
+    if deliveryErr != nil && status == "pending" {
+        historyStatus = "retry_scheduled"
+    }
+
     // Add history
     if _, err := q.CreateDeliveryHistory(ctx, queries.CreateDeliveryHistoryParams{
-        ID:                uuid.New(),
+        TenantID:          job.TenantID,
         JobID:             utils.NullUUID(job.ID),
         BuyerID:           utils.NullUUID(job.BuyerID),
         DeliveryMethodID:  utils.NullUUID(job.DeliveryMethodID),
-        Status:            utils.SqlNullString(status.String),
+        Status:            utils.SqlNullString(historyStatus),
         ErrorMessage:      utils.SqlNullString(lastErr.String),
     }); err != nil {
         return fmt.Errorf("failed to insert history: %w", err)
@@ -256,25 +358,169 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     return deliveryErr
 }
 
-// SES email sender
-func deliverEmail(ctx context.Context, job *queries.DeliveryJob, method *queries.DeliveryMethod, to string) error {
-    const SenderAddress = "notifications@lead-ship.app"
 
-    _, err := sesClient.SendEmail(ctx, &ses.SendEmailInput{
-        Destination: &types.Destination{
-            ToAddresses: []string{to},
-        },
-        Message: &types.Message{
-            Subject: &types.Content{Data: aws.String("New Lead")},
-            Body: &types.Body{
-                Text: &types.Content{
-                    Data: aws.String("Here are your leads. (TODO)"),
-                },
-            },
+
+// checkSESSuppressionList checks if an email is on AWS SES account-level suppression list
+func checkSESSuppressionList(ctx context.Context, email string) (bool, string, error) {
+    result, err := sesv2Client.GetSuppressedDestination(ctx, &sesv2.GetSuppressedDestinationInput{
+        EmailAddress: aws.String(email),
+    })
+    if err != nil {
+        // NotFound error means email is not suppressed
+        var notFound *sesv2types.NotFoundException
+        if errors.As(err, &notFound) {
+            return false, "", nil
+        }
+        return false, "", fmt.Errorf("failed to check SES suppression list: %w", err)
+    }
+
+    reason := string(result.SuppressedDestination.Reason)
+    log.Printf("Email %s is on SES suppression list, reason: %s", email, reason)
+    return true, reason, nil
+}
+
+// checkLocalSuppressionHistory checks the local database for bounce/complaint history
+func checkLocalSuppressionHistory(ctx context.Context, email string) (bool, string, error) {
+    // Check for hard bounces (permanent failures)
+    bounceCount, err := dbQueries.GetBounceCountByEmail(ctx, email)
+    if err != nil {
+        return false, "", fmt.Errorf("failed to check bounce count: %w", err)
+    }
+    if bounceCount > 0 {
+        return true, "previous_bounce", nil
+    }
+
+    // Check for complaints (spam reports)
+    complaintCount, err := dbQueries.GetComplaintCountByEmail(ctx, email)
+    if err != nil {
+        return false, "", fmt.Errorf("failed to check complaint count: %w", err)
+    }
+    if complaintCount > 0 {
+        return true, "previous_complaint", nil
+    }
+
+    return false, "", nil
+}
+
+// isEmailSuppressed checks both AWS SES and local database for suppression
+func isEmailSuppressed(ctx context.Context, email string) (bool, string, error) {
+    // Check AWS SES suppression list first
+    suppressed, reason, err := checkSESSuppressionList(ctx, email)
+    if err != nil {
+        log.Printf("Warning: failed to check SES suppression list: %v", err)
+        // Continue to check local database even if SES check fails
+    }
+    if suppressed {
+        return true, fmt.Sprintf("ses_suppression: %s", reason), nil
+    }
+
+    // Check local bounce/complaint history
+    suppressed, reason, err = checkLocalSuppressionHistory(ctx, email)
+    if err != nil {
+        return false, "", err
+    }
+    if suppressed {
+        return true, reason, nil
+    }
+
+    return false, "", nil
+}
+
+// SES email sender with retry-friendly error handling
+func deliverEmail(ctx context.Context, job *queries.DeliveryJob, method *queries.DeliveryMethod, csvData []byte, filename string) error {
+    const SenderAddress = "notifications@lead-ship.app"
+    
+
+    // Parse payload to get lead count and recipient email
+    var payload map[string]interface{}
+    leadCount := 0
+    recipientEmail := ""
+    
+    if err := json.Unmarshal(job.Payload, &payload); err != nil {
+        return fmt.Errorf("failed to parse job payload: %w", err)
+    }
+    
+    // Extract lead count
+    if leads, ok := payload["leads"].([]interface{}); ok {
+        leadCount = len(leads)
+    }
+    
+    // Extract recipient email from payload
+    if emailVal, exists := payload["recipient_email"]; exists && emailVal != nil {
+        if email, ok := emailVal.(string); ok && email != "" {
+            recipientEmail = email
+        }
+    }
+    
+    if recipientEmail == "" {
+        return fmt.Errorf("recipient email not found in job payload")
+    }
+
+    // Check if email is suppressed before attempting to send
+    suppressed, reason, err := isEmailSuppressed(ctx, recipientEmail)
+    if err != nil {
+        log.Printf("Warning: suppression check failed for %s: %v", recipientEmail, err)
+        // Continue with send attempt if suppression check fails
+    }
+    if suppressed {
+        log.Printf("Skipping delivery to suppressed email %s, reason: %s", recipientEmail, reason)
+        return fmt.Errorf("%w: %s", ErrEmailSuppressed, reason)
+    }
+
+    // Create email body with attachment
+    subject := "New Lead Delivery"
+    bodyText := fmt.Sprintf("Please find attached %d leads in CSV format.", leadCount)
+    
+    // Build MIME message with attachment
+    boundary := "boundary123"
+    
+    rawMessage := fmt.Sprintf(`From: %s
+To: %s
+Subject: %s
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="%s"
+
+--%s
+Content-Type: text/plain; charset=UTF-8
+
+%s
+
+--%s
+Content-Type: text/csv; name="%s"
+Content-Disposition: attachment; filename="%s"
+Content-Transfer-Encoding: base64
+
+%s
+--%s--`,
+        SenderAddress,
+        recipientEmail,
+        subject,
+        boundary,
+        boundary,
+        bodyText,
+        boundary,
+        filename,
+        filename,
+        base64.StdEncoding.EncodeToString(csvData),
+        boundary,
+    )
+    
+    log.Printf("Attempting to send email to %s with %d leads", recipientEmail, leadCount)
+    
+    _, err = sesClient.SendRawEmail(ctx, &ses.SendRawEmailInput{
+        RawMessage: &types.RawMessage{
+            Data: []byte(rawMessage),
         },
         Source: aws.String(SenderAddress),
     })
-    return err
+    
+    if err != nil {
+        log.Printf("Email delivery failed: %v", err)
+        return fmt.Errorf("email delivery failed: %w", err)
+    }
+    
+    log.Printf("Email successfully sent to %s", recipientEmail)
+    return nil
 }
 /*
 func deliverWebhook(ctx context.Context, job *queries.DeliveryJob, method *queries.DeliveryMethod, cfg WebhookDeliveryConfig) error {

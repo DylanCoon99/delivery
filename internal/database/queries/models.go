@@ -95,6 +95,7 @@ type DeliveryJob struct {
 	DeliveredAt      sql.NullTime
 	Status           string
 	LastError        sql.NullString
+	Attempts         int32
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
