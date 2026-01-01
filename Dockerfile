@@ -8,6 +8,6 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bootstrap .
 
 # Runtime - use x86_64 Lambda base image
 FROM public.ecr.aws/lambda/provided:al2
-# Copy directly to /var/runtime
-COPY --from=builder /build/bootstrap /var/runtime/bootstrap
+# Copy to Lambda task root directory
+COPY --from=builder /build/bootstrap ${LAMBDA_TASK_ROOT}/bootstrap
 CMD ["bootstrap"]
