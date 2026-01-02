@@ -11,7 +11,8 @@ import (
     "net/url"
     "time"
     "bytes"
-    //"net/http"
+    "net/http"
+    "io"
     "encoding/csv"
     "encoding/json"
     "encoding/base64"
@@ -40,10 +41,20 @@ var (
 // ErrEmailSuppressed indicates the email address is on a suppression list
 var ErrEmailSuppressed = errors.New("email address is suppressed")
 
-type WebhookDeliveryConfig struct {
-    URL        string `json:"url"`
-    APIKey     string `json:"api_key,omitempty"`
-    AuthHeader string `json:"auth_header,omitempty"`
+// ErrPermanentAPIFailure indicates a non-retryable API error (4xx responses)
+var ErrPermanentAPIFailure = errors.New("permanent API failure")
+
+type APIDeliveryConfig struct {
+    URL        string            `json:"url"`
+    Method     string            `json:"method,omitempty"`      // HTTP method, defaults to POST
+    AuthType   string            `json:"auth_type,omitempty"`   // "api_key", "bearer", "basic", or empty
+    APIKey     string            `json:"api_key,omitempty"`     // API key value
+    AuthHeader string            `json:"auth_header,omitempty"` // Header name for API key (default: X-API-Key)
+    BearerToken string           `json:"bearer_token,omitempty"`
+    BasicUser  string            `json:"basic_user,omitempty"`
+    BasicPass  string            `json:"basic_pass,omitempty"`
+    Headers    map[string]string `json:"headers,omitempty"`     // Additional custom headers
+    TimeoutSec int               `json:"timeout_sec,omitempty"` // Request timeout in seconds
 }
 
 /*
@@ -286,17 +297,15 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     switch method.MethodType.String {
     case "email":
         deliveryErr = deliverEmail(ctx, job, &method, csvBuffer.Bytes(), fmt.Sprintf("leads_%s.csv", time.Now().Format("20060102_150405")))
-    /*
-    case "webhook":
-        var cfg WebhookDeliveryConfig
+    case "api":
+        var cfg APIDeliveryConfig
         if err := json.Unmarshal(method.Config, &cfg); err != nil {
-            return fmt.Errorf("invalid webhook config json: %w", err)
+            return fmt.Errorf("invalid api config json: %w", err)
         }
         if cfg.URL == "" {
-            return fmt.Errorf("webhook method missing url config")
+            return fmt.Errorf("api method missing url config")
         }
-        deliveryErr = deliverWebhook(ctx, job, &method, cfg)
-    */
+        deliveryErr = deliverAPI(ctx, job, &method, cfg)
     default:
         return fmt.Errorf("unknown delivery method type: %s", method.MethodType.String)
     }
@@ -308,10 +317,10 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     lastErr := sql.NullString{Valid: false}
 
     if deliveryErr != nil {
-        // Check if this is a permanent failure (suppressed email - no retry)
-        if errors.Is(deliveryErr, ErrEmailSuppressed) {
+        // Check if this is a permanent failure (suppressed email or 4xx API error - no retry)
+        if errors.Is(deliveryErr, ErrEmailSuppressed) || errors.Is(deliveryErr, ErrPermanentAPIFailure) {
             status = "failed"
-            log.Printf("Job %s permanently failed - email suppressed: %v", job.ID, deliveryErr)
+            log.Printf("Job %s permanently failed: %v", job.ID, deliveryErr)
         } else if job.Attempts+1 < maxRetries {
             // Retryable error - keep as pending
             status = "pending"
@@ -485,38 +494,100 @@ Content-Transfer-Encoding: base64
     log.Printf("Email successfully sent to %s", recipientEmail)
     return nil
 }
-/*
-func deliverWebhook(ctx context.Context, job *queries.DeliveryJob, method *queries.DeliveryMethod, cfg WebhookDeliveryConfig) error {
-    payload := map[string]any{
-        "job_id":       job.ID.String(),
-        "buyer_id":     job.BuyerID.String(),
-        "tenant_id":    job.TenantID.String(),
-        "lead_payload": job.Payload,
+
+// deliverAPI sends leads to a configured HTTP endpoint
+func deliverAPI(ctx context.Context, job *queries.DeliveryJob, method *queries.DeliveryMethod, cfg APIDeliveryConfig) error {
+    // Parse the job payload to extract leads
+    var payload map[string]interface{}
+    if err := json.Unmarshal(job.Payload, &payload); err != nil {
+        return fmt.Errorf("failed to parse job payload: %w", err)
     }
 
-    url := cfg.URL
+    // Build the API request payload
+    apiPayload := map[string]interface{}{
+        "job_id":    job.ID.String(),
+        "buyer_id":  job.BuyerID.String(),
+        "tenant_id": job.TenantID.String(),
+        "leads":     payload["leads"],
+    }
 
-    body, _ := json.Marshal(payload)
-
-    req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+    body, err := json.Marshal(apiPayload)
     if err != nil {
-        return err
+        return fmt.Errorf("failed to marshal api payload: %w", err)
     }
+
+    // Determine HTTP method (default to POST)
+    httpMethod := cfg.Method
+    if httpMethod == "" {
+        httpMethod = "POST"
+    }
+
+    // Create the request
+    req, err := http.NewRequestWithContext(ctx, httpMethod, cfg.URL, bytes.NewReader(body))
+    if err != nil {
+        return fmt.Errorf("failed to create request: %w", err)
+    }
+
+    // Set content type
     req.Header.Set("Content-Type", "application/json")
 
-    resp, err := http.DefaultClient.Do(req)
+    // Apply authentication based on auth_type
+    switch cfg.AuthType {
+    case "api_key":
+        headerName := cfg.AuthHeader
+        if headerName == "" {
+            headerName = "X-API-Key"
+        }
+        req.Header.Set(headerName, cfg.APIKey)
+    case "bearer":
+        req.Header.Set("Authorization", "Bearer "+cfg.BearerToken)
+    case "basic":
+        req.SetBasicAuth(cfg.BasicUser, cfg.BasicPass)
+    }
+
+    // Apply any custom headers
+    for key, value := range cfg.Headers {
+        req.Header.Set(key, value)
+    }
+
+    // Configure timeout
+    timeout := 30 * time.Second
+    if cfg.TimeoutSec > 0 {
+        timeout = time.Duration(cfg.TimeoutSec) * time.Second
+    }
+
+    client := &http.Client{
+        Timeout: timeout,
+    }
+
+    log.Printf("Sending API request to %s with %d leads", cfg.URL, len(payload["leads"].([]interface{})))
+
+    // Execute the request
+    resp, err := client.Do(req)
     if err != nil {
-        return err
+        return fmt.Errorf("api request failed: %w", err)
     }
     defer resp.Body.Close()
 
-    if resp.StatusCode >= 300 {
-        return fmt.Errorf("webhook responded with status %d", resp.StatusCode)
+    // Read response body for error reporting
+    respBody, _ := io.ReadAll(resp.Body)
+
+    // Handle response status codes
+    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+        log.Printf("API delivery successful: status %d", resp.StatusCode)
+        return nil
     }
 
-    return nil
+    // 4xx errors are permanent failures (bad request, unauthorized, forbidden, not found)
+    if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+        log.Printf("API delivery permanently failed: status %d, body: %s", resp.StatusCode, string(respBody))
+        return fmt.Errorf("%w: status %d - %s", ErrPermanentAPIFailure, resp.StatusCode, string(respBody))
+    }
+
+    // 5xx errors are retryable
+    log.Printf("API delivery failed (retryable): status %d, body: %s", resp.StatusCode, string(respBody))
+    return fmt.Errorf("api responded with status %d: %s", resp.StatusCode, string(respBody))
 }
-*/
 
 func main() {
     lambda.Start(handler)
