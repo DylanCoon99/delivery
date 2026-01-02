@@ -318,7 +318,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         }
         lastErr = sql.NullString{String: deliveryErr.Error(), Valid: true}
     } else {
-        status = "completed"
+        status = "success"
         log.Printf("Job %s completed successfully on attempt %d", job.ID, job.Attempts+1)
     }
 
@@ -337,6 +337,8 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     historyStatus := status
     if deliveryErr != nil && status == "pending" {
         historyStatus = "retry_scheduled"
+    } else if errors.Is(deliveryErr, ErrEmailSuppressed) {
+        historyStatus = "suppressed"
     }
 
     // Add history
