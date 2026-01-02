@@ -21,6 +21,8 @@ import (
     "github.com/aws/aws-sdk-go-v2/config"
     "github.com/aws/aws-sdk-go-v2/service/ses/types"
     "github.com/aws/aws-sdk-go-v2/service/ses"
+    "github.com/aws/aws-sdk-go-v2/service/sesv2"
+    sesv2types "github.com/aws/aws-sdk-go-v2/service/sesv2/types"
     _ "github.com/jackc/pgx/v5/stdlib"
     //"github.com/DylanCoon99/delivery/cmd/types"
     "github.com/DylanCoon99/delivery/internal/utils"
@@ -29,9 +31,10 @@ import (
 )
 
 var (
-    db         *sql.DB          // Add this global variable
-    dbQueries  *queries.Queries
-    sesClient  *ses.Client
+    db          *sql.DB
+    dbQueries   *queries.Queries
+    sesClient   *ses.Client
+    sesV2Client *sesv2.Client
 )
 
 // ErrEmailSuppressed indicates the email address is on a suppression list
@@ -135,7 +138,8 @@ func init() {
     }
     
     sesClient = ses.NewFromConfig(cfg)
-    log.Println("SES client initialized")
+    sesV2Client = sesv2.NewFromConfig(cfg)
+    log.Println("SES clients initialized")
 
     log.Println("Lambda initialization complete")
 }
@@ -358,32 +362,31 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
 
 
 
-// checkLocalSuppressionHistory checks the local database for bounce/complaint history
-func checkLocalSuppressionHistory(ctx context.Context, email string) (bool, string, error) {
-    // Check for hard bounces (permanent failures)
-    bounceCount, err := dbQueries.GetBounceCountByEmail(ctx, email)
+// checkSESSuppressionList checks if the email is on AWS SES account-level suppression list
+func checkSESSuppressionList(ctx context.Context, email string) (bool, string, error) {
+    result, err := sesV2Client.GetSuppressedDestination(ctx, &sesv2.GetSuppressedDestinationInput{
+        EmailAddress: aws.String(email),
+    })
     if err != nil {
-        return false, "", fmt.Errorf("failed to check bounce count: %w", err)
-    }
-    if bounceCount > 0 {
-        return true, "previous_bounce", nil
+        // NotFound error means email is not suppressed - this is expected
+        var notFound *sesv2types.NotFoundException
+        if errors.As(err, &notFound) {
+            return false, "", nil
+        }
+        return false, "", fmt.Errorf("failed to check SES suppression list: %w", err)
     }
 
-    // Check for complaints (spam reports)
-    complaintCount, err := dbQueries.GetComplaintCountByEmail(ctx, email)
-    if err != nil {
-        return false, "", fmt.Errorf("failed to check complaint count: %w", err)
-    }
-    if complaintCount > 0 {
-        return true, "previous_complaint", nil
+    if result.SuppressedDestination != nil {
+        reason := string(result.SuppressedDestination.Reason)
+        return true, fmt.Sprintf("ses_%s", reason), nil
     }
 
     return false, "", nil
 }
 
-// isEmailSuppressed checks local database for bounce/complaint history
+// isEmailSuppressed checks if the email is on the SES suppression list
 func isEmailSuppressed(ctx context.Context, email string) (bool, string, error) {
-    return checkLocalSuppressionHistory(ctx, email)
+    return checkSESSuppressionList(ctx, email)
 }
 
 // SES email sender with retry-friendly error handling
