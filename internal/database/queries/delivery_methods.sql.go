@@ -15,29 +15,27 @@ import (
 
 const createDeliveryMethod = `-- name: CreateDeliveryMethod :one
 INSERT INTO delivery_methods (
-    id, tenant_id, buyer_id, method_type, config, is_active
+    tenant_id, buyer_id, method_type, config, is_active
 )
-VALUES ($1, $2, $3, $4, $5, COALESCE($6, TRUE))
+VALUES ($1, $2, $3, $4, COALESCE($5, TRUE))
 RETURNING id, tenant_id, buyer_id, method_type, config, is_active, created_at, updated_at
 `
 
 type CreateDeliveryMethodParams struct {
-	ID         uuid.UUID
 	TenantID   uuid.UUID
 	BuyerID    uuid.NullUUID
 	MethodType sql.NullString
 	Config     json.RawMessage
-	Column6    interface{}
+	Column5    interface{}
 }
 
 func (q *Queries) CreateDeliveryMethod(ctx context.Context, arg CreateDeliveryMethodParams) (DeliveryMethod, error) {
 	row := q.db.QueryRowContext(ctx, createDeliveryMethod,
-		arg.ID,
 		arg.TenantID,
 		arg.BuyerID,
 		arg.MethodType,
 		arg.Config,
-		arg.Column6,
+		arg.Column5,
 	)
 	var i DeliveryMethod
 	err := row.Scan(

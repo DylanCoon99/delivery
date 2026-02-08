@@ -16,7 +16,8 @@ import (
     "encoding/csv"
     "encoding/json"
     "encoding/base64"
-    //"github.com/google/uuid"
+    "mime/multipart"
+    "github.com/google/uuid"
     "github.com/aws/aws-lambda-go/lambda"
     "github.com/aws/aws-sdk-go-v2/aws"
     "github.com/aws/aws-sdk-go-v2/config"
@@ -305,7 +306,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         if cfg.URL == "" {
             return fmt.Errorf("api method missing url config")
         }
-        deliveryErr = deliverAPI(ctx, job, &method, cfg)
+        deliveryErr = deliverAPI(ctx, job, &method, cfg, csvBuffer.Bytes(), fmt.Sprintf("leads_%s.csv", time.Now().Format("20060102_150405")))
     default:
         return fmt.Errorf("unknown delivery method type: %s", method.MethodType.String)
     }
@@ -336,6 +337,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     }
 
 
+
     // Update job status
     if _, err := q.UpdateDeliveryJobStatus(ctx, queries.UpdateDeliveryJobStatusParams{
         ID:        job.ID,
@@ -345,6 +347,47 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     }); err != nil {
         return fmt.Errorf("failed to update job status: %w", err)
     }
+
+    // Update delivery status if delivery_id is set
+    if job.DeliveryID.Valid {
+        if err := q.UpdateDeliveryStatus(ctx, queries.UpdateDeliveryStatusParams{
+            ID:       job.DeliveryID.UUID,
+            TenantID: job.TenantID,
+            Status:   utils.SqlNullString(status),
+        }); err != nil {
+            log.Printf("Failed to update delivery status: %v", err)
+        }
+    }
+
+    // If delivery was successful, increment the campaign's delivered lead count
+    if status == "success" {
+        // Extract campaign_id and total_leads from payload
+        if campaignIDStr, ok := payload["campaign_id"].(string); ok && campaignIDStr != "" {
+            campaignID, parseErr := uuid.Parse(campaignIDStr)
+            if parseErr == nil {
+                // Get total leads count from payload
+                totalLeads := int32(0)
+                if leadsData, ok := payload["leads"].([]interface{}); ok {
+                    totalLeads = int32(len(leadsData))
+                } else if totalLeadsVal, ok := payload["total_leads"].(float64); ok {
+                    totalLeads = int32(totalLeadsVal)
+                }
+
+                if totalLeads > 0 {
+                    if err := q.IncrementCampaignDeliveredCount(ctx, queries.IncrementCampaignDeliveredCountParams{
+                        ID:                 campaignID,
+                        TenantID:           job.TenantID,
+                        DeliveredLeadCount: totalLeads,
+                    }); err != nil {
+                        log.Printf("Failed to increment campaign delivered count: %v", err)
+                    } else {
+                        log.Printf("Successfully incremented campaign %s delivered count by %d", campaignID, totalLeads)
+                    }
+                }
+            }
+        }
+    }
+
 
     // Add history entry
     historyStatus := status
@@ -495,25 +538,29 @@ Content-Transfer-Encoding: base64
     return nil
 }
 
-// deliverAPI sends leads to a configured HTTP endpoint
-func deliverAPI(ctx context.Context, job *queries.DeliveryJob, method *queries.DeliveryMethod, cfg APIDeliveryConfig) error {
-    // Parse the job payload to extract leads
-    var payload map[string]interface{}
-    if err := json.Unmarshal(job.Payload, &payload); err != nil {
-        return fmt.Errorf("failed to parse job payload: %w", err)
-    }
+// deliverAPI sends leads as a CSV file to a configured HTTP endpoint
+func deliverAPI(ctx context.Context, job *queries.DeliveryJob, method *queries.DeliveryMethod, cfg APIDeliveryConfig, csvData []byte, filename string) error {
+    // Create multipart form with CSV file
+    var requestBody bytes.Buffer
+    multipartWriter := multipart.NewWriter(&requestBody)
 
-    // Build the API request payload
-    apiPayload := map[string]interface{}{
-        "job_id":    job.ID.String(),
-        "buyer_id":  job.BuyerID.String(),
-        "tenant_id": job.TenantID.String(),
-        "leads":     payload["leads"],
-    }
+    // Add metadata fields
+    multipartWriter.WriteField("job_id", job.ID.String())
+    multipartWriter.WriteField("buyer_id", job.BuyerID.String())
+    multipartWriter.WriteField("tenant_id", job.TenantID.String())
 
-    body, err := json.Marshal(apiPayload)
+    // Add CSV file
+    fileWriter, err := multipartWriter.CreateFormFile("file", filename)
     if err != nil {
-        return fmt.Errorf("failed to marshal api payload: %w", err)
+        return fmt.Errorf("failed to create form file: %w", err)
+    }
+    if _, err := fileWriter.Write(csvData); err != nil {
+        return fmt.Errorf("failed to write csv data: %w", err)
+    }
+
+    // Close the multipart writer to finalize the boundary
+    if err := multipartWriter.Close(); err != nil {
+        return fmt.Errorf("failed to close multipart writer: %w", err)
     }
 
     // Determine HTTP method (default to POST)
@@ -523,13 +570,13 @@ func deliverAPI(ctx context.Context, job *queries.DeliveryJob, method *queries.D
     }
 
     // Create the request
-    req, err := http.NewRequestWithContext(ctx, httpMethod, cfg.URL, bytes.NewReader(body))
+    req, err := http.NewRequestWithContext(ctx, httpMethod, cfg.URL, &requestBody)
     if err != nil {
         return fmt.Errorf("failed to create request: %w", err)
     }
 
-    // Set content type
-    req.Header.Set("Content-Type", "application/json")
+    // Set content type with multipart boundary
+    req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
 
     // Apply authentication based on auth_type
     switch cfg.AuthType {
@@ -560,7 +607,7 @@ func deliverAPI(ctx context.Context, job *queries.DeliveryJob, method *queries.D
         Timeout: timeout,
     }
 
-    log.Printf("Sending API request to %s with %d leads", cfg.URL, len(payload["leads"].([]interface{})))
+    log.Printf("Sending API request to %s with CSV file %s (%d bytes)", cfg.URL, filename, len(csvData))
 
     // Execute the request
     resp, err := client.Do(req)

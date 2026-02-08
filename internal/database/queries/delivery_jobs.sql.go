@@ -20,6 +20,7 @@ INSERT INTO delivery_jobs (
     tenant_id,
     buyer_id,
     delivery_method_id,
+    delivery_id,
     scheduled_at,
     delivered_at,
     last_error,
@@ -30,19 +31,21 @@ VALUES (
     $1,                -- tenant_id
     $2,                -- buyer_id
     $3,                -- delivery_method_id
-    $4,                -- scheduled_at
-    $5,                -- delivered_at
-    $6,                -- last_error
-    $7,                -- payload (jsonb)
-    $8                 -- description
+    $4,                -- delivery_id
+    $5,                -- scheduled_at
+    $6,                -- delivered_at
+    $7,                -- last_error
+    $8,                -- payload (jsonb)
+    $9                 -- description
 )
-RETURNING id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
+RETURNING id, tenant_id, buyer_id, delivery_method_id, delivery_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
 `
 
 type CreateDeliveryJobParams struct {
 	TenantID         uuid.UUID
 	BuyerID          uuid.UUID
 	DeliveryMethodID uuid.UUID
+	DeliveryID       uuid.NullUUID
 	ScheduledAt      time.Time
 	DeliveredAt      sql.NullTime
 	LastError        sql.NullString
@@ -59,6 +62,7 @@ func (q *Queries) CreateDeliveryJob(ctx context.Context, arg CreateDeliveryJobPa
 		arg.TenantID,
 		arg.BuyerID,
 		arg.DeliveryMethodID,
+		arg.DeliveryID,
 		arg.ScheduledAt,
 		arg.DeliveredAt,
 		arg.LastError,
@@ -71,6 +75,7 @@ func (q *Queries) CreateDeliveryJob(ctx context.Context, arg CreateDeliveryJobPa
 		&i.TenantID,
 		&i.BuyerID,
 		&i.DeliveryMethodID,
+		&i.DeliveryID,
 		&i.Payload,
 		&i.Description,
 		&i.ScheduledAt,
@@ -101,7 +106,7 @@ func (q *Queries) DeleteDeliveryJob(ctx context.Context, arg DeleteDeliveryJobPa
 }
 
 const getDeliveryJob = `-- name: GetDeliveryJob :one
-SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
+SELECT id, tenant_id, buyer_id, delivery_method_id, delivery_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
 FROM delivery_jobs
 WHERE id = $1
   AND tenant_id = $2
@@ -121,6 +126,7 @@ func (q *Queries) GetDeliveryJob(ctx context.Context, arg GetDeliveryJobParams) 
 		&i.TenantID,
 		&i.BuyerID,
 		&i.DeliveryMethodID,
+		&i.DeliveryID,
 		&i.Payload,
 		&i.Description,
 		&i.ScheduledAt,
@@ -135,7 +141,7 @@ func (q *Queries) GetDeliveryJob(ctx context.Context, arg GetDeliveryJobParams) 
 }
 
 const getDueJobs = `-- name: GetDueJobs :many
-SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
+SELECT id, tenant_id, buyer_id, delivery_method_id, delivery_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
 FROM delivery_jobs
 WHERE status = 'pending'
   AND scheduled_at <= NOW()
@@ -157,6 +163,7 @@ func (q *Queries) GetDueJobs(ctx context.Context) ([]DeliveryJob, error) {
 			&i.TenantID,
 			&i.BuyerID,
 			&i.DeliveryMethodID,
+			&i.DeliveryID,
 			&i.Payload,
 			&i.Description,
 			&i.ScheduledAt,
@@ -198,21 +205,22 @@ func (q *Queries) IncrementDeliveryJobAttempts(ctx context.Context, arg Incremen
 }
 
 const listPendingJobs = `-- name: ListPendingJobs :many
-SELECT id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
+SELECT id, tenant_id, buyer_id, delivery_method_id, delivery_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
 FROM delivery_jobs
 WHERE status = 'pending'
-  AND tenant_id = $2
+  AND tenant_id = $1
 ORDER BY scheduled_at ASC, created_at ASC
-LIMIT $1
+LIMIT $2 OFFSET $3
 `
 
 type ListPendingJobsParams struct {
-	Limit    int32
 	TenantID uuid.UUID
+	Limit    int32
+	Offset   int32
 }
 
 func (q *Queries) ListPendingJobs(ctx context.Context, arg ListPendingJobsParams) ([]DeliveryJob, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingJobs, arg.Limit, arg.TenantID)
+	rows, err := q.db.QueryContext(ctx, listPendingJobs, arg.TenantID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +233,7 @@ func (q *Queries) ListPendingJobs(ctx context.Context, arg ListPendingJobsParams
 			&i.TenantID,
 			&i.BuyerID,
 			&i.DeliveryMethodID,
+			&i.DeliveryID,
 			&i.Payload,
 			&i.Description,
 			&i.ScheduledAt,
@@ -256,7 +265,7 @@ SET status = $2,
     updated_at = now()
 WHERE id = $1
   AND tenant_id = $3
-RETURNING id, tenant_id, buyer_id, delivery_method_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
+RETURNING id, tenant_id, buyer_id, delivery_method_id, delivery_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
 `
 
 type UpdateDeliveryJobStatusParams struct {
@@ -279,6 +288,7 @@ func (q *Queries) UpdateDeliveryJobStatus(ctx context.Context, arg UpdateDeliver
 		&i.TenantID,
 		&i.BuyerID,
 		&i.DeliveryMethodID,
+		&i.DeliveryID,
 		&i.Payload,
 		&i.Description,
 		&i.ScheduledAt,

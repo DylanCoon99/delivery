@@ -107,15 +107,23 @@ FROM delivery_history
 WHERE job_id = $1
   AND tenant_id = $2
 ORDER BY created_at DESC
+LIMIT $3 OFFSET $4
 `
 
 type ListHistoryByJobParams struct {
 	JobID    uuid.NullUUID
 	TenantID uuid.UUID
+	Limit    int32
+	Offset   int32
 }
 
 func (q *Queries) ListHistoryByJob(ctx context.Context, arg ListHistoryByJobParams) ([]DeliveryHistory, error) {
-	rows, err := q.db.QueryContext(ctx, listHistoryByJob, arg.JobID, arg.TenantID)
+	rows, err := q.db.QueryContext(ctx, listHistoryByJob,
+		arg.JobID,
+		arg.TenantID,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}

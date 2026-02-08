@@ -16,3 +16,41 @@ Delivery testing process
 		- schedule the delivery for a time in the future
 	- observe the lambda function behavior
 	
+
+Add these to Campaign Creation
+	- lead count
+	- industries (can check off multiple from a list) -> get list from dad
+	- geo (global, and region)
+	- titles (type it in; can add multiple)
+	- company revenue (can type in and add multiple ranges)
+	- employee size (can type in and add multiple ranges)
+
+industries
+Aerospace/Aviation
+Automotive
+Biotech, Medical & Pharmaceuticals
+Commercial Vehicles
+Communications
+Consumer Product Manufacturing
+Defense
+Design & Engineering Firm
+Early Education/Academic
+Energy & Utilities
+Financial Services
+Government
+Healthcare (Hospital Systems)
+Healthcare (Non-Hospital Systems)
+Higher Education/Academic (University)
+Industrial Machinery & Equipment
+Information Technology
+Insurance
+Legal
+Materials/Chemicals
+Manufacturing
+Retail / Hospitality / Consumer Goods
+Research & Lab
+Service Industry
+Telecommunications
+Transportation & Logistics
+Wholesalers / Distributors
+Other industries

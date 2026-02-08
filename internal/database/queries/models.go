@@ -43,7 +43,7 @@ type Campaign struct {
 	ID                uuid.UUID
 	TenantID          uuid.UUID
 	BuyerID           uuid.NullUUID
-	SuppressionListID uuid.UUID
+	SuppressionListID uuid.NullUUID
 	Name              string
 	DeliverySchedule  sql.NullString
 	IsActive          sql.NullBool
@@ -89,6 +89,7 @@ type DeliveryJob struct {
 	TenantID         uuid.UUID
 	BuyerID          uuid.UUID
 	DeliveryMethodID uuid.UUID
+	DeliveryID       uuid.NullUUID
 	Payload          json.RawMessage
 	Description      sql.NullString
 	ScheduledAt      time.Time
@@ -125,7 +126,7 @@ type DeliverySchedule struct {
 }
 
 type EmailEvent struct {
-	ID             int32
+	ID             uuid.UUID
 	Email          string
 	EventType      string
 	EventSubtype   sql.NullString
@@ -214,6 +215,7 @@ type SuppressionEmployeeSize struct {
 type SuppressionEntry struct {
 	ID                uuid.UUID
 	SuppressionListID uuid.UUID
+	NameHash          sql.NullString
 	EmailHash         sql.NullString
 	PhoneHash         sql.NullString
 	CreatedAt         sql.NullTime

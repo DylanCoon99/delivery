@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/sqlc-dev/pqtype"
 )
 
@@ -93,10 +94,17 @@ const getBouncesByType = `-- name: GetBouncesByType :many
 SELECT id, email, event_type, event_subtype, reason, diagnostic_code, feedback_id, message_id, created_at, raw_data FROM email_events
 WHERE event_type = 'bounce' AND event_subtype = $1
 ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
 `
 
-func (q *Queries) GetBouncesByType(ctx context.Context, eventSubtype sql.NullString) ([]EmailEvent, error) {
-	rows, err := q.db.QueryContext(ctx, getBouncesByType, eventSubtype)
+type GetBouncesByTypeParams struct {
+	EventSubtype sql.NullString
+	Limit        int32
+	Offset       int32
+}
+
+func (q *Queries) GetBouncesByType(ctx context.Context, arg GetBouncesByTypeParams) ([]EmailEvent, error) {
+	rows, err := q.db.QueryContext(ctx, getBouncesByType, arg.EventSubtype, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +150,7 @@ func (q *Queries) GetComplaintCountByEmail(ctx context.Context, email string) (i
 }
 
 const getDailyEventStats = `-- name: GetDailyEventStats :many
-SELECT 
+SELECT
     DATE(created_at) as date,
     event_type,
     COUNT(*) as count
@@ -150,7 +158,14 @@ FROM email_events
 WHERE created_at >= $1
 GROUP BY DATE(created_at), event_type
 ORDER BY date DESC, event_type
+LIMIT $2 OFFSET $3
 `
+
+type GetDailyEventStatsParams struct {
+	CreatedAt sql.NullTime
+	Limit     int32
+	Offset    int32
+}
 
 type GetDailyEventStatsRow struct {
 	Date      time.Time
@@ -158,8 +173,8 @@ type GetDailyEventStatsRow struct {
 	Count     int64
 }
 
-func (q *Queries) GetDailyEventStats(ctx context.Context, createdAt sql.NullTime) ([]GetDailyEventStatsRow, error) {
-	rows, err := q.db.QueryContext(ctx, getDailyEventStats, createdAt)
+func (q *Queries) GetDailyEventStats(ctx context.Context, arg GetDailyEventStatsParams) ([]GetDailyEventStatsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getDailyEventStats, arg.CreatedAt, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +201,7 @@ SELECT id, email, event_type, event_subtype, reason, diagnostic_code, feedback_i
 WHERE id = $1
 `
 
-func (q *Queries) GetEmailEventByID(ctx context.Context, id int32) (EmailEvent, error) {
+func (q *Queries) GetEmailEventByID(ctx context.Context, id uuid.UUID) (EmailEvent, error) {
 	row := q.db.QueryRowContext(ctx, getEmailEventByID, id)
 	var i EmailEvent
 	err := row.Scan(
@@ -208,10 +223,17 @@ const getEmailEventsByEmail = `-- name: GetEmailEventsByEmail :many
 SELECT id, email, event_type, event_subtype, reason, diagnostic_code, feedback_id, message_id, created_at, raw_data FROM email_events
 WHERE email = $1
 ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
 `
 
-func (q *Queries) GetEmailEventsByEmail(ctx context.Context, email string) ([]EmailEvent, error) {
-	rows, err := q.db.QueryContext(ctx, getEmailEventsByEmail, email)
+type GetEmailEventsByEmailParams struct {
+	Email  string
+	Limit  int32
+	Offset int32
+}
+
+func (q *Queries) GetEmailEventsByEmail(ctx context.Context, arg GetEmailEventsByEmailParams) ([]EmailEvent, error) {
+	rows, err := q.db.QueryContext(ctx, getEmailEventsByEmail, arg.Email, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -248,15 +270,23 @@ const getEmailEventsByEmailAndType = `-- name: GetEmailEventsByEmailAndType :man
 SELECT id, email, event_type, event_subtype, reason, diagnostic_code, feedback_id, message_id, created_at, raw_data FROM email_events
 WHERE email = $1 AND event_type = $2
 ORDER BY created_at DESC
+LIMIT $3 OFFSET $4
 `
 
 type GetEmailEventsByEmailAndTypeParams struct {
 	Email     string
 	EventType string
+	Limit     int32
+	Offset    int32
 }
 
 func (q *Queries) GetEmailEventsByEmailAndType(ctx context.Context, arg GetEmailEventsByEmailAndTypeParams) ([]EmailEvent, error) {
-	rows, err := q.db.QueryContext(ctx, getEmailEventsByEmailAndType, arg.Email, arg.EventType)
+	rows, err := q.db.QueryContext(ctx, getEmailEventsByEmailAndType,
+		arg.Email,
+		arg.EventType,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -340,10 +370,17 @@ const getEmailEventsByType = `-- name: GetEmailEventsByType :many
 SELECT id, email, event_type, event_subtype, reason, diagnostic_code, feedback_id, message_id, created_at, raw_data FROM email_events
 WHERE event_type = $1
 ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
 `
 
-func (q *Queries) GetEmailEventsByType(ctx context.Context, eventType string) ([]EmailEvent, error) {
-	rows, err := q.db.QueryContext(ctx, getEmailEventsByType, eventType)
+type GetEmailEventsByTypeParams struct {
+	EventType string
+	Limit     int32
+	Offset    int32
+}
+
+func (q *Queries) GetEmailEventsByType(ctx context.Context, arg GetEmailEventsByTypeParams) ([]EmailEvent, error) {
+	rows, err := q.db.QueryContext(ctx, getEmailEventsByType, arg.EventType, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
@@ -380,15 +417,23 @@ const getEmailEventsInDateRange = `-- name: GetEmailEventsInDateRange :many
 SELECT id, email, event_type, event_subtype, reason, diagnostic_code, feedback_id, message_id, created_at, raw_data FROM email_events
 WHERE created_at BETWEEN $1 AND $2
 ORDER BY created_at DESC
+LIMIT $3 OFFSET $4
 `
 
 type GetEmailEventsInDateRangeParams struct {
 	CreatedAt   sql.NullTime
 	CreatedAt_2 sql.NullTime
+	Limit       int32
+	Offset      int32
 }
 
 func (q *Queries) GetEmailEventsInDateRange(ctx context.Context, arg GetEmailEventsInDateRangeParams) ([]EmailEvent, error) {
-	rows, err := q.db.QueryContext(ctx, getEmailEventsInDateRange, arg.CreatedAt, arg.CreatedAt_2)
+	rows, err := q.db.QueryContext(ctx, getEmailEventsInDateRange,
+		arg.CreatedAt,
+		arg.CreatedAt_2,
+		arg.Limit,
+		arg.Offset,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -489,16 +534,17 @@ const getRecentEmailEvents = `-- name: GetRecentEmailEvents :many
 SELECT id, email, event_type, event_subtype, reason, diagnostic_code, feedback_id, message_id, created_at, raw_data FROM email_events
 WHERE created_at > $1
 ORDER BY created_at DESC
-LIMIT $2
+LIMIT $2 OFFSET $3
 `
 
 type GetRecentEmailEventsParams struct {
 	CreatedAt sql.NullTime
 	Limit     int32
+	Offset    int32
 }
 
 func (q *Queries) GetRecentEmailEvents(ctx context.Context, arg GetRecentEmailEventsParams) ([]EmailEvent, error) {
-	rows, err := q.db.QueryContext(ctx, getRecentEmailEvents, arg.CreatedAt, arg.Limit)
+	rows, err := q.db.QueryContext(ctx, getRecentEmailEvents, arg.CreatedAt, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
