@@ -228,20 +228,82 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
 
     log.Printf("Leads: %v", leadsData)
 
+    // Extract campaign questions (for custom column headers)
+    type QuestionInfo struct {
+        ID           string
+        QuestionText string
+        DisplayOrder int
+    }
+    var questions []QuestionInfo
+
+    // Debug: log the raw questions data from payload
+    rawQuestions := payload["questions"]
+    log.Printf("Raw questions from payload: %v (type: %T)", rawQuestions, rawQuestions)
+
+    if questionsData, ok := payload["questions"].([]interface{}); ok {
+        log.Printf("Found %d questions in payload", len(questionsData))
+        for _, qInterface := range questionsData {
+            if qMap, ok := qInterface.(map[string]interface{}); ok {
+                q := QuestionInfo{}
+                if id, ok := qMap["id"].(string); ok {
+                    q.ID = id
+                }
+                if text, ok := qMap["question_text"].(string); ok {
+                    q.QuestionText = text
+                }
+                if order, ok := qMap["display_order"].(float64); ok {
+                    q.DisplayOrder = int(order)
+                }
+                log.Printf("Extracted question: ID=%s, Text=%s, Order=%d", q.ID, q.QuestionText, q.DisplayOrder)
+                questions = append(questions, q)
+            }
+        }
+    } else {
+        log.Printf("Warning: Could not extract questions from payload - type assertion failed")
+    }
+
+    // Sort questions by display_order
+    for i := 0; i < len(questions)-1; i++ {
+        for j := i + 1; j < len(questions); j++ {
+            if questions[j].DisplayOrder < questions[i].DisplayOrder {
+                questions[i], questions[j] = questions[j], questions[i]
+            }
+        }
+    }
+
     // Generate CSV
     csvBuffer := new(bytes.Buffer)
     writer := csv.NewWriter(csvBuffer)
-    
-    // Write CSV header
-    writer.Write([]string{"Email", "First Name", "Phone Number", 
-        "Company Name", "Employee Size", "Publisher Name", 
+
+    // Build CSV header with base columns plus question text columns
+    header := []string{"Email", "First Name", "Phone Number",
+        "Company Name", "Employee Size", "Publisher Name",
         "LinkedIn Company", "LinkedIn Contact", "Downloaded Asset Name",
-        "State", "Region", "Address", "Industry", "IP Address"}) // Add your columns
-    
+        "State", "Region", "Address", "Industry", "IP Address"}
+
+    // Add question text as column headers
+    for _, q := range questions {
+        header = append(header, q.QuestionText)
+    }
+    log.Printf("CSV header built with %d total columns (%d base + %d question columns)", len(header), 14, len(questions))
+    log.Printf("Header columns: %v", header)
+    writer.Write(header)
+
     // Write lead data
+    firstLead := true
     for _, leadInterface := range leadsData {
 
         lead := leadInterface.(map[string]interface{})
+
+        // Debug: log the first lead's CustomAnswers to help diagnose issues
+        if firstLead {
+            if ca, exists := lead["CustomAnswers"]; exists {
+                log.Printf("First lead CustomAnswers: %v (type: %T)", ca, ca)
+            } else {
+                log.Printf("First lead has no CustomAnswers field")
+            }
+            firstLead = false
+        }
         // Helper function to safely extract string values
         extractString := func(field interface{}) string {
             if field == nil {
@@ -261,8 +323,8 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
             }
             return ""
         }
-        
-        writer.Write([]string{
+
+        row := []string{
             extractString(lead["EmailHash"]),
             extractString(lead["FullName"]),
             extractString(lead["PhoneHash"]),
@@ -277,7 +339,39 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
             extractString(lead["Address"]),
             extractString(lead["Industry"]),
             extractString(lead["IpAddress"]),
-        })
+        }
+
+        // Extract custom answers for each question
+        var customAnswers map[string]interface{}
+        if ca, ok := lead["CustomAnswers"]; ok && ca != nil {
+            // Handle JSONB from database (may be nested in RawMessage struct)
+            if caMap, ok := ca.(map[string]interface{}); ok {
+                if rawMsg, exists := caMap["RawMessage"]; exists && rawMsg != nil {
+                    // It's a pqtype.NullRawMessage, parse the RawMessage
+                    if rawBytes, ok := rawMsg.([]byte); ok && len(rawBytes) > 0 {
+                        json.Unmarshal(rawBytes, &customAnswers)
+                    } else if rawStr, ok := rawMsg.(string); ok && rawStr != "" {
+                        json.Unmarshal([]byte(rawStr), &customAnswers)
+                    }
+                } else {
+                    // Direct map
+                    customAnswers = caMap
+                }
+            }
+        }
+
+        // Add custom answer values in question order
+        for _, q := range questions {
+            answer := ""
+            if customAnswers != nil {
+                if val, exists := customAnswers[q.ID]; exists && val != nil {
+                    answer = extractString(val)
+                }
+            }
+            row = append(row, answer)
+        }
+
+        writer.Write(row)
     }
     writer.Flush()
 
