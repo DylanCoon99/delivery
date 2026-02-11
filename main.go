@@ -364,11 +364,24 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         }
 
         // Add custom answer values in question order
+        // Debug: Log question IDs and CustomAnswers keys for first lead
+        if idx == 0 {
+            log.Printf("DEBUG: Question IDs from payload:")
+            for _, q := range questions {
+                log.Printf("  - Question ID: %s, Text: %s", q.ID, q.QuestionText)
+            }
+            log.Printf("DEBUG: CustomAnswers keys for first lead:")
+            for key, val := range customAnswers {
+                log.Printf("  - Key: %s, Value: %v", key, val)
+            }
+        }
         for _, q := range questions {
             answer := ""
             if customAnswers != nil {
                 if val, exists := customAnswers[q.ID]; exists && val != nil {
                     answer = extractString(val)
+                } else {
+                    log.Printf("DEBUG: No match for question ID %s in CustomAnswers", q.ID)
                 }
             }
             row = append(row, answer)
