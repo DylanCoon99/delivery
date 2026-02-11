@@ -344,51 +344,31 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         // Extract custom answers for each question
         var customAnswers map[string]interface{}
         if ca, ok := lead["CustomAnswers"]; ok && ca != nil {
-            log.Printf("DEBUG: CustomAnswers found, type: %T, value: %v", ca, ca)
-            // Handle JSONB from database (may be nested in RawMessage struct)
+            // Handle JSONB from database - may be wrapped in pqtype.NullRawMessage structure
             if caMap, ok := ca.(map[string]interface{}); ok {
-                log.Printf("DEBUG: CustomAnswers is map[string]interface{} with %d keys", len(caMap))
-                if rawMsg, exists := caMap["RawMessage"]; exists && rawMsg != nil {
-                    // It's a pqtype.NullRawMessage, parse the RawMessage
-                    log.Printf("DEBUG: Found RawMessage field, type: %T", rawMsg)
-                    if rawBytes, ok := rawMsg.([]byte); ok && len(rawBytes) > 0 {
-                        json.Unmarshal(rawBytes, &customAnswers)
-                    } else if rawStr, ok := rawMsg.(string); ok && rawStr != "" {
-                        json.Unmarshal([]byte(rawStr), &customAnswers)
-                    }
-                } else {
-                    // Direct map - check if Valid field exists (pqtype structure)
+                // Check if it's a pqtype.NullRawMessage structure with RawMessage and Valid fields
+                if rawMsg, hasRaw := caMap["RawMessage"]; hasRaw {
                     if valid, hasValid := caMap["Valid"]; hasValid {
-                        log.Printf("DEBUG: Has Valid field: %v", valid)
                         if validBool, ok := valid.(bool); ok && validBool {
-                            if rawMsg, hasRaw := caMap["RawMessage"]; hasRaw && rawMsg != nil {
-                                log.Printf("DEBUG: RawMessage type: %T, value: %v", rawMsg, rawMsg)
-                                // Try to parse RawMessage as the actual answers
-                                if rawMap, ok := rawMsg.(map[string]interface{}); ok {
-                                    customAnswers = rawMap
-                                }
+                            // RawMessage is already deserialized as a map
+                            if rawMap, ok := rawMsg.(map[string]interface{}); ok {
+                                customAnswers = rawMap
                             }
                         }
-                    } else {
-                        // Direct map without Valid field
-                        customAnswers = caMap
                     }
+                } else {
+                    // Direct map without RawMessage wrapper
+                    customAnswers = caMap
                 }
             }
-        } else {
-            log.Printf("DEBUG: CustomAnswers not found or nil in lead")
         }
 
         // Add custom answer values in question order
-        log.Printf("DEBUG: Processing %d questions, customAnswers has %d entries", len(questions), len(customAnswers))
         for _, q := range questions {
             answer := ""
             if customAnswers != nil {
                 if val, exists := customAnswers[q.ID]; exists && val != nil {
                     answer = extractString(val)
-                    log.Printf("DEBUG: Question %s (%s) = %s", q.ID, q.QuestionText, answer)
-                } else {
-                    log.Printf("DEBUG: Question %s (%s) not found in customAnswers. Available keys: %v", q.ID, q.QuestionText, getMapKeys(customAnswers))
                 }
             }
             row = append(row, answer)
@@ -751,15 +731,6 @@ func deliverAPI(ctx context.Context, job *queries.DeliveryJob, method *queries.D
     // 5xx errors are retryable
     log.Printf("API delivery failed (retryable): status %d, body: %s", resp.StatusCode, string(respBody))
     return fmt.Errorf("api responded with status %d: %s", resp.StatusCode, string(respBody))
-}
-
-// Helper function to get map keys for debugging
-func getMapKeys(m map[string]interface{}) []string {
-    keys := make([]string, 0, len(m))
-    for k := range m {
-        keys = append(keys, k)
-    }
-    return keys
 }
 
 func main() {
