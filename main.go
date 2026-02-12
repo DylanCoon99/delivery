@@ -324,6 +324,32 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
             return ""
         }
 
+        // Helper function to extract IP address (stored as IPNet structure)
+        extractIPAddress := func(field interface{}) string {
+            if field == nil {
+                return ""
+            }
+            if fieldMap, ok := field.(map[string]interface{}); ok {
+                // Check Valid flag
+                if valid, exists := fieldMap["Valid"]; exists {
+                    if validBool, ok := valid.(bool); ok && !validBool {
+                        return ""
+                    }
+                }
+                // Extract IP from IPNet structure: { IPNet: { IP: "x.x.x.x" }, Valid: true }
+                if ipNet, exists := fieldMap["IPNet"]; exists && ipNet != nil {
+                    if ipNetMap, ok := ipNet.(map[string]interface{}); ok {
+                        if ip, exists := ipNetMap["IP"]; exists && ip != nil {
+                            if ipStr, ok := ip.(string); ok {
+                                return ipStr
+                            }
+                        }
+                    }
+                }
+            }
+            return ""
+        }
+
         row := []string{
             extractString(lead["EmailHash"]),
             extractString(lead["FullName"]),
@@ -338,7 +364,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
             extractString(lead["Region"]),
             extractString(lead["Address"]),
             extractString(lead["Industry"]),
-            extractString(lead["IpAddress"]),
+            extractIPAddress(lead["IpAddress"]),
         }
 
         // Extract custom answers for each question
