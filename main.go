@@ -279,13 +279,13 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     header := []string{"Email", "First Name", "Phone Number",
         "Company Name", "Employee Size", "Publisher Name",
         "LinkedIn Company", "LinkedIn Contact", "Downloaded Asset Name",
-        "State", "Region", "Address", "Industry", "IP Address"}
+        "State", "Region", "Address", "Industry", "IP Address", "Date/Time Stamp"}
 
     // Add question text as column headers
     for _, q := range questions {
         header = append(header, q.QuestionText)
     }
-    log.Printf("CSV header built with %d total columns (%d base + %d question columns)", len(header), 14, len(questions))
+    log.Printf("CSV header built with %d total columns (%d base + %d question columns)", len(header), 15, len(questions))
     log.Printf("Header columns: %v", header)
     writer.Write(header)
 
@@ -350,6 +350,28 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
             return ""
         }
 
+        // Helper function to extract timestamp (stored as Time structure)
+        extractTimestamp := func(field interface{}) string {
+            if field == nil {
+                return ""
+            }
+            if fieldMap, ok := field.(map[string]interface{}); ok {
+                // Check Valid flag
+                if valid, exists := fieldMap["Valid"]; exists {
+                    if validBool, ok := valid.(bool); ok && !validBool {
+                        return ""
+                    }
+                }
+                // Extract Time value
+                if timeVal, exists := fieldMap["Time"]; exists && timeVal != nil {
+                    if timeStr, ok := timeVal.(string); ok {
+                        return timeStr
+                    }
+                }
+            }
+            return ""
+        }
+
         row := []string{
             extractString(lead["EmailHash"]),
             extractString(lead["FullName"]),
@@ -365,6 +387,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
             extractString(lead["Address"]),
             extractString(lead["Industry"]),
             extractIPAddress(lead["IpAddress"]),
+            extractTimestamp(lead["CapturedAt"]),
         }
 
         // Extract custom answers for each question
