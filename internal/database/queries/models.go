@@ -143,7 +143,8 @@ type Lead struct {
 	TenantID            uuid.UUID
 	CampaignID          uuid.UUID
 	LeadBatchID         uuid.NullUUID
-	FullName            sql.NullString
+	FirstName           sql.NullString
+	LastName            sql.NullString
 	EmailCipher         []byte
 	PhoneCipher         []byte
 	DekWrapped          []byte

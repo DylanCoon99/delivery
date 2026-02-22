@@ -276,7 +276,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     writer := csv.NewWriter(csvBuffer)
 
     // Build CSV header with base columns plus question text columns
-    header := []string{"Email", "First Name", "Phone Number",
+    header := []string{"Email", "First Name", "Last Name", "Phone Number",
         "Company Name", "Employee Size", "Publisher Name",
         "LinkedIn Company", "LinkedIn Contact", "Downloaded Asset Name",
         "State", "Region", "Address", "Industry", "IP Address", "Date/Time Stamp"}
@@ -285,7 +285,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     for _, q := range questions {
         header = append(header, q.QuestionText)
     }
-    log.Printf("CSV header built with %d total columns (%d base + %d question columns)", len(header), 15, len(questions))
+    log.Printf("CSV header built with %d total columns (%d base + %d question columns)", len(header), 16, len(questions))
     log.Printf("Header columns: %v", header)
     writer.Write(header)
 
@@ -374,7 +374,8 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
 
         row := []string{
             extractString(lead["EmailHash"]),
-            extractString(lead["FullName"]),
+            extractString(lead["FirstName"]),
+            extractString(lead["LastName"]),
             extractString(lead["PhoneHash"]),
             extractString(lead["CompanyName"]),
             extractString(lead["EmployeeSize"]),
