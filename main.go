@@ -279,13 +279,13 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     header := []string{"Email", "First Name", "Last Name", "Phone Number",
         "Company Name", "Employee Size", "Publisher Name",
         "LinkedIn Company", "LinkedIn Contact", "Downloaded Asset Name",
-        "State", "Region", "Address", "Industry", "IP Address", "Date/Time Stamp"}
+        "State", "Region", "Address", "Industry", "IP Address", "Date/Time Stamp", "NAICS Code"}
 
     // Add question text as column headers
     for _, q := range questions {
         header = append(header, q.QuestionText)
     }
-    log.Printf("CSV header built with %d total columns (%d base + %d question columns)", len(header), 16, len(questions))
+    log.Printf("CSV header built with %d total columns (%d base + %d question columns)", len(header), 17, len(questions))
     log.Printf("Header columns: %v", header)
     writer.Write(header)
 
@@ -389,6 +389,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
             extractString(lead["Industry"]),
             extractIPAddress(lead["IpAddress"]),
             extractTimestamp(lead["CapturedAt"]),
+            extractString(lead["NaicsCode"]),
         }
 
         // Extract custom answers for each question

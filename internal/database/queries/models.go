@@ -164,6 +164,8 @@ type Lead struct {
 	EmployeeSize        sql.NullString
 	Region              sql.NullString
 	State               sql.NullString
+	Title               sql.NullString
+	NaicsCode           sql.NullString
 	CreatedAt           sql.NullTime
 	UpdatedAt           sql.NullTime
 }
