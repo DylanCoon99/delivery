@@ -162,7 +162,6 @@ type Lead struct {
 	Industry            sql.NullString
 	RevenueSize         sql.NullString
 	EmployeeSize        sql.NullString
-	Region              sql.NullString
 	State               sql.NullString
 	Title               sql.NullString
 	NaicsCode           sql.NullString
@@ -232,14 +231,6 @@ type SuppressionList struct {
 	Description sql.NullString
 	CreatedAt   sql.NullTime
 	UpdatedAt   sql.NullTime
-}
-
-type SuppressionRegion struct {
-	ID                uuid.UUID
-	SuppressionListID uuid.UUID
-	RegionName        string
-	CreatedAt         sql.NullTime
-	UpdatedAt         sql.NullTime
 }
 
 type SuppressionRevenueSize struct {
