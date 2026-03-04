@@ -7,6 +7,8 @@ import (
     "fmt"
     "log"
     "os"
+    "strings"
+    "sync"
 
     "net/url"
     "time"
@@ -37,6 +39,11 @@ var (
     dbQueries   *queries.Queries
     sesClient   *ses.Client
     sesV2Client *sesv2.Client
+
+    // Credential caching
+    credentialsMu      sync.Mutex
+    credentialsLastRefresh time.Time
+    credentialsTTL     = 15 * time.Minute // Refresh credentials every 15 minutes
 )
 
 // ErrEmailSuppressed indicates the email address is on a suppression list
@@ -79,37 +86,39 @@ func init() {
 
 
 
-func init() {
-    log.Println("Initializing Lambda function...")
-    
+// connectDB establishes database connection with current credentials from Secrets Manager
+func connectDB() error {
+    credentialsMu.Lock()
+    defer credentialsMu.Unlock()
+
     // Get database credentials from Secrets Manager
     secret, err := utils.GetDBSecret()
     if err != nil {
-        log.Fatalf("Failed to get database secret: %v", err)
+        return fmt.Errorf("failed to get database secret: %w", err)
     }
-    log.Println("Retrieved database credentials")
-    
+    log.Println("Retrieved database credentials from Secrets Manager")
+
     // Get database connection details from environment
     host := os.Getenv("HOST")
     port := os.Getenv("PORT")
     dbName := os.Getenv("DB_NAME")
-    
+
     // Validate environment variables
     if host == "" {
-        log.Fatal("HOST environment variable not set")
+        return fmt.Errorf("HOST environment variable not set")
     }
     if port == "" {
         port = "5432" // default PostgreSQL port
     }
     if dbName == "" {
-        log.Fatal("DB_NAME environment variable not set")
+        return fmt.Errorf("DB_NAME environment variable not set")
     }
-    
+
     log.Printf("Connecting to: %s:%s/%s", host, port, dbName)
-    
+
     // URL encode password to handle special characters
     encodedPassword := url.QueryEscape(secret.Password)
-    
+
     // Build connection string
     dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=require",
         secret.Username,
@@ -118,37 +127,80 @@ func init() {
         port,
         dbName,
     )
-    
-    // Open database connection (use pgx driver, store in GLOBAL db variable)
-    db, err = sql.Open("pgx", dsn)  //  No := here, assigns to global db
-    if err != nil {
-        log.Fatalf("Failed to open database: %v", err)
+
+    // Close existing connection if any
+    if db != nil {
+        db.Close()
     }
-    
+
+    // Open database connection (use pgx driver, store in GLOBAL db variable)
+    db, err = sql.Open("pgx", dsn)
+    if err != nil {
+        return fmt.Errorf("failed to open database: %w", err)
+    }
+
     // Test the connection
     ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
     defer cancel()
-    
+
     if err := db.PingContext(ctx); err != nil {
-        log.Fatalf("Failed to ping database: %v", err)
+        return fmt.Errorf("failed to ping database: %w", err)
     }
     log.Println("Database connection established")
-    
+
     // Configure connection pool
     db.SetMaxOpenConns(25)
     db.SetMaxIdleConns(5)
     db.SetConnMaxLifetime(5 * time.Minute)
-    
+
     // Create queries object
     dbQueries = queries.New(db)
     log.Println("Database queries initialized")
-    
+
+    // Update last refresh time
+    credentialsLastRefresh = time.Now()
+
+    return nil
+}
+
+// refreshCredentialsIfNeeded checks if credentials should be refreshed based on TTL
+func refreshCredentialsIfNeeded() error {
+    credentialsMu.Lock()
+    needsRefresh := time.Since(credentialsLastRefresh) > credentialsTTL
+    credentialsMu.Unlock()
+
+    if needsRefresh {
+        log.Println("Credentials TTL expired, refreshing...")
+        return connectDB()
+    }
+    return nil
+}
+
+// isAuthError checks if the error is a database authentication error
+func isAuthError(err error) bool {
+    if err == nil {
+        return false
+    }
+    errStr := err.Error()
+    return strings.Contains(errStr, "password authentication failed") ||
+           strings.Contains(errStr, "SQLSTATE 28P01") ||
+           strings.Contains(errStr, "SQLSTATE 28000")
+}
+
+func init() {
+    log.Println("Initializing Lambda function...")
+
+    // Initial database connection
+    if err := connectDB(); err != nil {
+        log.Fatalf("Failed to connect to database: %v", err)
+    }
+
     // Initialize AWS SES client
     cfg, err := config.LoadDefaultConfig(context.Background())
     if err != nil {
         log.Fatalf("Failed to load AWS config: %v", err)
     }
-    
+
     sesClient = ses.NewFromConfig(cfg)
     sesV2Client = sesv2.NewFromConfig(cfg)
     log.Println("SES clients initialized")
@@ -159,20 +211,39 @@ func init() {
 
 // Main Lambda entrypoint
 func handler(ctx context.Context) error {
+    // Check if credentials need refreshing based on TTL
+    if err := refreshCredentialsIfNeeded(); err != nil {
+        log.Printf("Warning: failed to refresh credentials: %v", err)
+    }
 
     limit := int32(50) // default
     offset := int32(0) // default
 
-    // TODO: iterate through tenants — or add "global pending jobs" endpoint
+    // Try to fetch tenants, retry with fresh credentials on auth error
     tenants, err := dbQueries.ListTenants(ctx, queries.ListTenantsParams{
         Limit:  limit,
         Offset: offset,
     })
     if err != nil {
-        return fmt.Errorf("failed to fetch tenants: %w", err)
-    } else {
-        log.Printf("Got tenants: %v", tenants)
+        // If auth error, refresh credentials and retry once
+        if isAuthError(err) {
+            log.Println("Authentication error detected, refreshing credentials...")
+            if refreshErr := connectDB(); refreshErr != nil {
+                return fmt.Errorf("failed to refresh credentials: %w", refreshErr)
+            }
+            // Retry the query
+            tenants, err = dbQueries.ListTenants(ctx, queries.ListTenantsParams{
+                Limit:  limit,
+                Offset: offset,
+            })
+            if err != nil {
+                return fmt.Errorf("failed to fetch tenants after credential refresh: %w", err)
+            }
+        } else {
+            return fmt.Errorf("failed to fetch tenants: %w", err)
+        }
     }
+    log.Printf("Got tenants: %v", tenants)
 
     if err := processJobs(ctx, dbQueries); err != nil {
         log.Printf("Error processing jobs %v",  err)
