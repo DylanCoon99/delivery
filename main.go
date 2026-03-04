@@ -342,161 +342,201 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         }
     }
 
-    // Generate CSV
-    csvBuffer := new(bytes.Buffer)
-    writer := csv.NewWriter(csvBuffer)
-
-    // Build CSV header with base columns plus question text columns
-    header := []string{"Email", "First Name", "Last Name", "Phone Number",
-        "Company Name", "Employee Size", "Publisher Name",
-        "LinkedIn Company", "LinkedIn Contact", "Downloaded Asset Name",
-        "State", "Address", "Industry", "IP Address", "Date/Time Stamp", "NAICS Code"}
-
-    // Add question text as column headers
-    for _, q := range questions {
-        header = append(header, q.QuestionText)
-    }
-    log.Printf("CSV header built with %d total columns (%d base + %d question columns)", len(header), 16, len(questions))
-    log.Printf("Header columns: %v", header)
-    writer.Write(header)
-
-    // Write lead data
-    firstLead := true
-    for _, leadInterface := range leadsData {
-
-        lead := leadInterface.(map[string]interface{})
-
-        // Debug: log the first lead's CustomAnswers to help diagnose issues
-        if firstLead {
-            if ca, exists := lead["CustomAnswers"]; exists {
-                log.Printf("First lead CustomAnswers: %v (type: %T)", ca, ca)
-            } else {
-                log.Printf("First lead has no CustomAnswers field")
-            }
-            firstLead = false
-        }
-        // Helper function to safely extract string values
-        extractString := func(field interface{}) string {
-            if field == nil {
-                return ""
-            }
-            // Handle nested map structure (e.g., map[String:value Valid:true])
-            if fieldMap, ok := field.(map[string]interface{}); ok {
-                if strVal, exists := fieldMap["String"]; exists && strVal != nil {
-                    if str, ok := strVal.(string); ok {
-                        return str
-                    }
-                }
-            }
-            // Handle direct string
-            if str, ok := field.(string); ok {
-                return str
-            }
+    // Helper function to safely extract string values
+    extractString := func(field interface{}) string {
+        if field == nil {
             return ""
         }
-
-        // Helper function to extract IP address (stored as IPNet structure)
-        extractIPAddress := func(field interface{}) string {
-            if field == nil {
-                return ""
-            }
-            if fieldMap, ok := field.(map[string]interface{}); ok {
-                // Check Valid flag
-                if valid, exists := fieldMap["Valid"]; exists {
-                    if validBool, ok := valid.(bool); ok && !validBool {
-                        return ""
-                    }
+        // Handle nested map structure (e.g., map[String:value Valid:true])
+        if fieldMap, ok := field.(map[string]interface{}); ok {
+            if strVal, exists := fieldMap["String"]; exists && strVal != nil {
+                if str, ok := strVal.(string); ok {
+                    return str
                 }
-                // Extract IP from IPNet structure: { IPNet: { IP: "x.x.x.x" }, Valid: true }
-                if ipNet, exists := fieldMap["IPNet"]; exists && ipNet != nil {
-                    if ipNetMap, ok := ipNet.(map[string]interface{}); ok {
-                        if ip, exists := ipNetMap["IP"]; exists && ip != nil {
-                            if ipStr, ok := ip.(string); ok {
-                                return ipStr
-                            }
+            }
+        }
+        // Handle direct string
+        if str, ok := field.(string); ok {
+            return str
+        }
+        return ""
+    }
+
+    // Helper function to extract IP address (stored as IPNet structure)
+    extractIPAddress := func(field interface{}) string {
+        if field == nil {
+            return ""
+        }
+        if fieldMap, ok := field.(map[string]interface{}); ok {
+            // Check Valid flag
+            if valid, exists := fieldMap["Valid"]; exists {
+                if validBool, ok := valid.(bool); ok && !validBool {
+                    return ""
+                }
+            }
+            // Extract IP from IPNet structure: { IPNet: { IP: "x.x.x.x" }, Valid: true }
+            if ipNet, exists := fieldMap["IPNet"]; exists && ipNet != nil {
+                if ipNetMap, ok := ipNet.(map[string]interface{}); ok {
+                    if ip, exists := ipNetMap["IP"]; exists && ip != nil {
+                        if ipStr, ok := ip.(string); ok {
+                            return ipStr
                         }
                     }
                 }
             }
+        }
+        return ""
+    }
+
+    // Helper function to extract timestamp (stored as Time structure)
+    extractTimestamp := func(field interface{}) string {
+        if field == nil {
             return ""
         }
-
-        // Helper function to extract timestamp (stored as Time structure)
-        extractTimestamp := func(field interface{}) string {
-            if field == nil {
-                return ""
-            }
-            if fieldMap, ok := field.(map[string]interface{}); ok {
-                // Check Valid flag
-                if valid, exists := fieldMap["Valid"]; exists {
-                    if validBool, ok := valid.(bool); ok && !validBool {
-                        return ""
-                    }
-                }
-                // Extract Time value
-                if timeVal, exists := fieldMap["Time"]; exists && timeVal != nil {
-                    if timeStr, ok := timeVal.(string); ok {
-                        return timeStr
-                    }
+        if fieldMap, ok := field.(map[string]interface{}); ok {
+            // Check Valid flag
+            if valid, exists := fieldMap["Valid"]; exists {
+                if validBool, ok := valid.(bool); ok && !validBool {
+                    return ""
                 }
             }
-            return ""
+            // Extract Time value
+            if timeVal, exists := fieldMap["Time"]; exists && timeVal != nil {
+                if timeStr, ok := timeVal.(string); ok {
+                    return timeStr
+                }
+            }
         }
+        return ""
+    }
 
-        row := []string{
-            extractString(lead["EmailHash"]),
-            extractString(lead["FirstName"]),
-            extractString(lead["LastName"]),
-            extractString(lead["PhoneHash"]),
-            extractString(lead["CompanyName"]),
-            extractString(lead["EmployeeSize"]),
-            extractString(lead["PublisherName"]),
-            extractString(lead["LinkedinCompany"]),
-            extractString(lead["LinkedinContact"]),
-            extractString(lead["DownloadedAssetName"]),
-            extractString(lead["State"]),
-            extractString(lead["Address"]),
-            extractString(lead["Industry"]),
-            extractIPAddress(lead["IpAddress"]),
-            extractTimestamp(lead["CapturedAt"]),
-            extractString(lead["NaicsCode"]),
-        }
-
-        // Extract custom answers for each question
-        var customAnswers map[string]interface{}
+    // Helper function to extract custom answers from a lead
+    extractCustomAnswers := func(lead map[string]interface{}) map[string]interface{} {
         if ca, ok := lead["CustomAnswers"]; ok && ca != nil {
-            // Handle JSONB from database - may be wrapped in pqtype.NullRawMessage structure
             if caMap, ok := ca.(map[string]interface{}); ok {
-                // Check if it's a pqtype.NullRawMessage structure with RawMessage and Valid fields
                 if rawMsg, hasRaw := caMap["RawMessage"]; hasRaw {
                     if valid, hasValid := caMap["Valid"]; hasValid {
                         if validBool, ok := valid.(bool); ok && validBool {
-                            // RawMessage is already deserialized as a map
                             if rawMap, ok := rawMsg.(map[string]interface{}); ok {
-                                customAnswers = rawMap
+                                return rawMap
                             }
                         }
                     }
                 } else {
-                    // Direct map without RawMessage wrapper
-                    customAnswers = caMap
+                    return caMap
                 }
             }
         }
+        return nil
+    }
 
-        // Add custom answer values in question order
-        for _, q := range questions {
+    // Define column structure for dynamic CSV generation
+    type ColumnDef struct {
+        Key       string
+        Header    string
+        Extractor func(lead map[string]interface{}) string
+    }
+
+    // Build column definitions for base fields
+    baseColumns := []ColumnDef{
+        {Key: "email", Header: "Email", Extractor: func(l map[string]interface{}) string { return extractString(l["EmailHash"]) }},
+        {Key: "first_name", Header: "First Name", Extractor: func(l map[string]interface{}) string { return extractString(l["FirstName"]) }},
+        {Key: "last_name", Header: "Last Name", Extractor: func(l map[string]interface{}) string { return extractString(l["LastName"]) }},
+        {Key: "phone", Header: "Phone Number", Extractor: func(l map[string]interface{}) string { return extractString(l["PhoneHash"]) }},
+        {Key: "company_name", Header: "Company Name", Extractor: func(l map[string]interface{}) string { return extractString(l["CompanyName"]) }},
+        {Key: "employee_size", Header: "Employee Size", Extractor: func(l map[string]interface{}) string { return extractString(l["EmployeeSize"]) }},
+        {Key: "publisher_name", Header: "Publisher Name", Extractor: func(l map[string]interface{}) string { return extractString(l["PublisherName"]) }},
+        {Key: "linkedin_company", Header: "LinkedIn Company", Extractor: func(l map[string]interface{}) string { return extractString(l["LinkedinCompany"]) }},
+        {Key: "linkedin_contact", Header: "LinkedIn Contact", Extractor: func(l map[string]interface{}) string { return extractString(l["LinkedinContact"]) }},
+        {Key: "asset_name", Header: "Downloaded Asset Name", Extractor: func(l map[string]interface{}) string { return extractString(l["DownloadedAssetName"]) }},
+        {Key: "state", Header: "State", Extractor: func(l map[string]interface{}) string { return extractString(l["State"]) }},
+        {Key: "address", Header: "Address", Extractor: func(l map[string]interface{}) string { return extractString(l["Address"]) }},
+        {Key: "industry", Header: "Industry", Extractor: func(l map[string]interface{}) string { return extractString(l["Industry"]) }},
+        {Key: "ip_address", Header: "IP Address", Extractor: func(l map[string]interface{}) string { return extractIPAddress(l["IpAddress"]) }},
+        {Key: "timestamp", Header: "Date/Time Stamp", Extractor: func(l map[string]interface{}) string { return extractTimestamp(l["CapturedAt"]) }},
+        {Key: "naics_code", Header: "NAICS Code", Extractor: func(l map[string]interface{}) string { return extractString(l["NaicsCode"]) }},
+    }
+
+    // First pass: extract all values and track which columns have data
+    type LeadValues struct {
+        BaseValues     []string
+        QuestionValues []string
+    }
+    allLeadValues := make([]LeadValues, 0, len(leadsData))
+    columnHasData := make([]bool, len(baseColumns))
+    questionHasData := make([]bool, len(questions))
+
+    for _, leadInterface := range leadsData {
+        lead := leadInterface.(map[string]interface{})
+
+        // Extract base column values
+        baseValues := make([]string, len(baseColumns))
+        for i, col := range baseColumns {
+            val := col.Extractor(lead)
+            baseValues[i] = val
+            if val != "" {
+                columnHasData[i] = true
+            }
+        }
+
+        // Extract question values
+        customAnswers := extractCustomAnswers(lead)
+        questionValues := make([]string, len(questions))
+        for i, q := range questions {
             answer := ""
             if customAnswers != nil {
                 if val, exists := customAnswers[q.ID]; exists && val != nil {
                     answer = extractString(val)
-                } else {
-                    log.Printf("DEBUG: No match for question ID %s in CustomAnswers (keys: %v)", q.ID, customAnswers)
                 }
             }
-            row = append(row, answer)
+            questionValues[i] = answer
+            if answer != "" {
+                questionHasData[i] = true
+            }
         }
 
+        allLeadValues = append(allLeadValues, LeadValues{
+            BaseValues:     baseValues,
+            QuestionValues: questionValues,
+        })
+    }
+
+    // Build header with only columns that have data
+    var header []string
+    var includedBaseColumns []int
+    var includedQuestionColumns []int
+
+    for i, hasData := range columnHasData {
+        if hasData {
+            header = append(header, baseColumns[i].Header)
+            includedBaseColumns = append(includedBaseColumns, i)
+        }
+    }
+    for i, hasData := range questionHasData {
+        if hasData {
+            header = append(header, questions[i].QuestionText)
+            includedQuestionColumns = append(includedQuestionColumns, i)
+        }
+    }
+
+    log.Printf("CSV will include %d base columns (of %d) and %d question columns (of %d)",
+        len(includedBaseColumns), len(baseColumns), len(includedQuestionColumns), len(questions))
+    log.Printf("Header columns: %v", header)
+
+    // Generate CSV
+    csvBuffer := new(bytes.Buffer)
+    writer := csv.NewWriter(csvBuffer)
+    writer.Write(header)
+
+    // Write lead data with only included columns
+    for _, leadValues := range allLeadValues {
+        var row []string
+        for _, idx := range includedBaseColumns {
+            row = append(row, leadValues.BaseValues[idx])
+        }
+        for _, idx := range includedQuestionColumns {
+            row = append(row, leadValues.QuestionValues[idx])
+        }
         writer.Write(row)
     }
     writer.Flush()
