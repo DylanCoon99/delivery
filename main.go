@@ -703,7 +703,7 @@ func isEmailSuppressed(ctx context.Context, email string) (bool, string, error) 
 
 // SES email sender with retry-friendly error handling
 func deliverEmail(ctx context.Context, job *queries.DeliveryJob, method *queries.DeliveryMethod, csvData []byte, filename string) error {
-    const SenderAddress = "notifications@lead-ship.app"
+    const SenderAddress = "notifications@mail.lead-ship.com"
     
 
     // Parse payload to get lead count and recipient email
