@@ -342,6 +342,52 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         }
     }
 
+    // Parse csv_field_config from payload for deliver_to_buyer filtering
+    type CsvFieldConfigEntry struct {
+        Key            string `json:"key"`
+        Label          string `json:"label"`
+        DeliverToBuyer bool   `json:"deliver_to_buyer"`
+        Required       bool   `json:"required"`
+        Order          int32  `json:"order"`
+    }
+    var csvFieldConfig []CsvFieldConfigEntry
+    if cfgData, ok := payload["csv_field_config"].([]interface{}); ok && len(cfgData) > 0 {
+        for _, cfgInterface := range cfgData {
+            if cfgMap, ok := cfgInterface.(map[string]interface{}); ok {
+                entry := CsvFieldConfigEntry{}
+                if key, ok := cfgMap["key"].(string); ok {
+                    entry.Key = key
+                }
+                if label, ok := cfgMap["label"].(string); ok {
+                    entry.Label = label
+                }
+                if dtb, ok := cfgMap["deliver_to_buyer"].(bool); ok {
+                    entry.DeliverToBuyer = dtb
+                }
+                if req, ok := cfgMap["required"].(bool); ok {
+                    entry.Required = req
+                }
+                if order, ok := cfgMap["order"].(float64); ok {
+                    entry.Order = int32(order)
+                }
+                csvFieldConfig = append(csvFieldConfig, entry)
+            }
+        }
+        log.Printf("Parsed %d csv_field_config entries", len(csvFieldConfig))
+    }
+
+    // Build a set of field keys that should be delivered to the buyer
+    deliverToBuyerKeys := make(map[string]bool)
+    hasCsvFieldConfig := len(csvFieldConfig) > 0
+    if hasCsvFieldConfig {
+        for _, cfg := range csvFieldConfig {
+            if cfg.DeliverToBuyer {
+                deliverToBuyerKeys[cfg.Key] = true
+            }
+        }
+        log.Printf("deliver_to_buyer keys: %v", deliverToBuyerKeys)
+    }
+
     // Helper function to safely extract string values
     extractString := func(field interface{}) string {
         if field == nil {
@@ -501,16 +547,23 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         })
     }
 
-    // Build header with only columns that have data
+    // Build header with only columns that should be delivered
     var header []string
     var includedBaseColumns []int
     var includedQuestionColumns []int
 
     for i, hasData := range columnHasData {
-        if hasData {
-            header = append(header, baseColumns[i].Header)
-            includedBaseColumns = append(includedBaseColumns, i)
+        if !hasData {
+            continue
         }
+        // If csv_field_config is present, only include columns where deliver_to_buyer is true
+        if hasCsvFieldConfig {
+            if !deliverToBuyerKeys[baseColumns[i].Key] {
+                continue
+            }
+        }
+        header = append(header, baseColumns[i].Header)
+        includedBaseColumns = append(includedBaseColumns, i)
     }
     for i, hasData := range questionHasData {
         if hasData {
