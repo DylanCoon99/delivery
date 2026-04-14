@@ -141,11 +141,14 @@ func (q *Queries) GetDeliveryJob(ctx context.Context, arg GetDeliveryJobParams) 
 }
 
 const getDueJobs = `-- name: GetDueJobs :many
-SELECT id, tenant_id, buyer_id, delivery_method_id, delivery_id, payload, description, scheduled_at, delivered_at, status, last_error, attempts, created_at, updated_at
-FROM delivery_jobs
-WHERE status = 'pending'
-  AND scheduled_at <= NOW()
-ORDER BY scheduled_at ASC
+SELECT dj.id, dj.tenant_id, dj.buyer_id, dj.delivery_method_id, dj.delivery_id, dj.payload, dj.description, dj.scheduled_at, dj.delivered_at, dj.status, dj.last_error, dj.attempts, dj.created_at, dj.updated_at
+FROM delivery_jobs dj
+JOIN deliveries d ON d.id = dj.delivery_id
+JOIN campaigns c ON c.id = d.campaign_id
+WHERE dj.status = 'pending'
+  AND dj.scheduled_at <= NOW()
+  AND c.is_active = true
+ORDER BY dj.scheduled_at ASC
 LIMIT 100
 `
 
