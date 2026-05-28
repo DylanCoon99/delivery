@@ -608,12 +608,18 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
     }
 
 
+    // Determine delivery filename — use original upload filename if available, fall back to timestamp
+    deliveryFilename := fmt.Sprintf("leads_%s.csv", time.Now().Format("20060102_150405"))
+    if fn, ok := payload["source_file_name"].(string); ok && fn != "" {
+        deliveryFilename = fn
+    }
+
     // Execute delivery
     var deliveryErr error
 
     switch method.MethodType.String {
     case "email":
-        deliveryErr = deliverEmail(ctx, job, &method, csvBuffer.Bytes(), fmt.Sprintf("leads_%s.csv", time.Now().Format("20060102_150405")))
+        deliveryErr = deliverEmail(ctx, job, &method, csvBuffer.Bytes(), deliveryFilename)
     case "api":
         var cfg APIDeliveryConfig
         if err := json.Unmarshal(method.Config, &cfg); err != nil {
@@ -622,7 +628,7 @@ func processJob(ctx context.Context, q *queries.Queries, job *queries.DeliveryJo
         if cfg.URL == "" {
             return fmt.Errorf("api method missing url config")
         }
-        deliveryErr = deliverAPI(ctx, job, &method, cfg, csvBuffer.Bytes(), fmt.Sprintf("leads_%s.csv", time.Now().Format("20060102_150405")))
+        deliveryErr = deliverAPI(ctx, job, &method, cfg, csvBuffer.Bytes(), deliveryFilename)
     default:
         return fmt.Errorf("unknown delivery method type: %s", method.MethodType.String)
     }
